@@ -30,3 +30,17 @@
 *.exe
 *.out
 *.app
+
+.idea/*
+cmake-build-debug/*
+cmake-build-release/*
+build/*
+.vscode
+3rdparty/*cmake-build*
+*.user
+*Build
+*.autosave
+
+**/cmake-build-debug/*
+**/cmake-build-release/*
+**/bin/*
