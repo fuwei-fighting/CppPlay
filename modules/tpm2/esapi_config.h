@@ -8,6 +8,7 @@
 #include <string.h>
 #include <tss2/tss2_common.h>
 #include <tss2/tss2_esys.h>
+#include <tss2/tss2_tcti.h>
 #include <tss2/tss2_tcti_mssim.h>
 #include <tss2/tss2_tcti_device.h>
 
@@ -86,13 +87,6 @@ typedef struct {
     TSS2_TCTI_CONTEXT* tctiInner;
     enum state state;
 } TSS2_TCTI_CONTEXT_PROXY;
-
-void tcti_teardown(TSS2_TCTI_CONTEXT* tcti_context) {
-    if (tcti_context) {
-        Tss2_Tcti_Finalize(tcti_context);
-        free(tcti_context);
-    }
-}
 
 int test_esys_get_random(ESYS_CONTEXT* esys_context);
 
