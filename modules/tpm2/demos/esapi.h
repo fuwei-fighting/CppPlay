@@ -5,6 +5,15 @@
 #ifndef TPM2_ESAPI_H
 #define TPM2_ESAPI_H
 
+#include <stdbool.h>
+#include <stdint.h>
+
+#include "tss2/tss2_rc.h"
+
+typedef struct tpm_ctx tpm_ctx;
+
+#define DEFAULT_SRK_HANDLE 0x81010020
+
 TSS2_TCTI_CONTEXT*
 tcti_device_init(char const* device_path);
 
@@ -57,6 +66,8 @@ int init_tcti_context_demo(TSS2_TCTI_CONTEXT** tcti_context);
 
 int test_encrypt_decrypt_esapi(ESYS_CONTEXT* esys_context);
 
-int load_persistent_key(ESYS_CONTEXT* esys_context, TPM2_HANDLE handler, TPM2B_PRIVATE* inPrivate, TPM2B_PUBLIC* inPublic);
+int load_persistent_key(ESYS_CONTEXT* esys_context, TPM2_HANDLE handler, TPM2B_PRIVATE** inPrivate, TPM2B_PUBLIC** inPublic);
+
+int tpm_get_existed_primary(ESYS_CONTEXT* esys_context, uint32_t* primary_handle, const char** primary_blob);
 
 #endif  //TPM2_ESAPI_H

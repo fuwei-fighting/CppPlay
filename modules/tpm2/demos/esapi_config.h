@@ -2,7 +2,7 @@
 #define ESPAI_TEST_H
 
 #include <stdio.h>
-#include <stdlib.h>
+#include <c++/9/stdlib.h>
 #include <stdint.h>
 #include <errno.h>
 #include <string.h>

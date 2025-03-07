@@ -5,7 +5,7 @@ project(${PROJECT_NAME})
 
 set(CMAKE_CXX_STANDARD 11)
 
-add_executable(${PROJECT_NAME} main.c esapi.c esapi.h esapi_config.h tpm2api.c)
+add_executable(${PROJECT_NAME} demos/main.c demos/esapi.c demos/esapi.h demos/esapi_config.h demos/tpm2api.c)
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/../../CMakeLists.txt)
 

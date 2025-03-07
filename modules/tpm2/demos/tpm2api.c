@@ -5,6 +5,26 @@
 #include "esapi_config.h"
 #include "esapi.h"
 
+#include <assert.h>
+
+struct tpm_ctx {
+    TSS2_TCTI_CONTEXT* tcti_ctx;
+    ESYS_CONTEXT* esys_ctx;
+    bool esapi_manage_session_flags;
+    ESYS_TR hmac_session;
+    TPMA_SESSION old_flags;
+    TPMA_SESSION original_flags;
+    TPMS_CAPABILITY_DATA* tpms_fixed_property_cache;
+    TPMS_CAPABILITY_DATA* tpms_alg_cache;
+    TPMS_CAPABILITY_DATA* tpms_cc_cache;
+
+    bool did_check_for_createloaded;
+    bool use_createloaded;
+
+    bool did_check_for_encdec2;
+    bool use_encdec2;
+};
+
 int init_tcti_context_demo(TSS2_TCTI_CONTEXT** tcti_context) {
     TSS2_RC rc;
     size_t tcti_size;
@@ -42,8 +62,8 @@ int init_tcti_context_demo(TSS2_TCTI_CONTEXT** tcti_context) {
 
 int test_encrypt_decrypt_esapi(ESYS_CONTEXT* esys_context) {
     /**
-     * （1） 初始化和设置授权值
-     */
+         * （1） 初始化和设置授权值
+         */
     TSS2_RC r;
     ESYS_TR primaryHandle = ESYS_TR_NONE;    // 存储主密钥句柄
     ESYS_TR loadedKeyHandle = ESYS_TR_NONE;  // 需要加载的子密钥句柄
@@ -124,34 +144,40 @@ int test_encrypt_decrypt_esapi(ESYS_CONTEXT* esys_context) {
     //        LOG_ERROR("Error: esys create primary:0x%x", r);
     //        goto error;
     //    }
-    TPM2B_PRIVATE inPrivate = {0};  // 私钥部分
-    TPM2B_PUBLIC inPublic = {0};    // 公钥部分
+    TPM2B_PRIVATE* inPrivate = NULL;  // 私钥部分
+    TPM2B_PUBLIC* inPublic = NULL;    // 公钥部分
 
-    r = load_persistent_key(esys_context, 0x81010020, &inPrivate, &inPublic);
+    //    r = load_persistent_key(esys_context, 0x81010020, &inPrivate, &inPublic);
+    //    if (r != TSS2_RC_SUCCESS) {
+    //        fprintf(stderr, "load_persistent_key failed with code 0x%x\n", r);
+    //        Esys_Finalize(&esys_context);
+    //        return -1;
+    //    }
+    const char* primary_blob = NULL;
+    r = tpm_get_existed_primary(esys_context, &primaryHandle, &primary_blob);
     if (r != TSS2_RC_SUCCESS) {
         fprintf(stderr, "load_persistent_key failed with code 0x%x\n", r);
         Esys_Finalize(&esys_context);
         return -1;
     }
-
     // 加载密钥
-    r = Esys_Load(esys_context,
-                  ESYS_TR_RH_OWNER,
-                  ESYS_TR_PASSWORD, ESYS_TR_NONE, ESYS_TR_NONE,
-                  &inPrivate,
-                  &inPublic,
-                  &primaryHandle);
-    if (r != TSS2_RC_SUCCESS) {
-        fprintf(stderr, "Esys_Load failed with code 0x%x\n", r);
-        Esys_Finalize(&esys_context);
-        return -1;
-    }
+    //        r = Esys_Load(esys_context,
+    //                      ESYS_TR_RH_OWNER,
+    //                      ESYS_TR_PASSWORD, ESYS_TR_NONE, ESYS_TR_NONE,
+    //                      inPrivate,
+    //                      inPublic,
+    //                      &primaryHandle);
+    //        if (r != TSS2_RC_SUCCESS) {
+    //            fprintf(stderr, "Esys_Load failed with code 0x%x\n", r);
+    //            Esys_Finalize(&esys_context);
+    //            return -1;
+    //        }
 
     printf("Key loaded successfully.\n");
 
     /**
-     * （3）创建子密钥
-     */
+         * （3）创建子密钥
+         */
     TPM2B_AUTH passwordAuth = {};
 
     const char* password = "qwer1234!@#$";
@@ -220,8 +246,8 @@ int test_encrypt_decrypt_esapi(ESYS_CONTEXT* esys_context) {
     printf("AES key created.\n");
 
     /**
-     * （4）加载子密钥
-     */
+         * （4）加载子密钥
+         */
     // Esys_Load 函数用于将之前创建的 TPM 对象加载到 TPM 中，使其在当前会话中可用。加载后的对象可以用于各种 TPM 操作，如加密、解密、签名等。
     r = Esys_Load(esys_context,
                   primaryHandle,
@@ -243,8 +269,8 @@ int test_encrypt_decrypt_esapi(ESYS_CONTEXT* esys_context) {
     }
 
     /**
-    * （5）加密和解密数据
-    */
+        * （5）加密和解密数据
+        */
     ESYS_TR keyHandle_handle = loadedKeyHandle;
     TPMI_YES_NO decrypt = TPM2_YES;          // 设置为 TPM2_YES，表示进行解密操作。
     TPMI_YES_NO encrypt = TPM2_NO;           // 设置为 TPM2_NO，表示进行加密操作
@@ -330,7 +356,7 @@ error:
     return failure_return;
 }
 
-int load_persistent_key(ESYS_CONTEXT* esys_context, TPM2_HANDLE handler, TPM2B_PRIVATE* inPrivate, TPM2B_PUBLIC* inPublic) {
+int load_persistent_key(ESYS_CONTEXT* esys_context, TPM2_HANDLE handler, TPM2B_PRIVATE** inPrivate, TPM2B_PUBLIC** inPublic) {
     TSS2_RC rc;
     // 获取公钥部分
     ESYS_TR esyHandler;
@@ -344,7 +370,7 @@ int load_persistent_key(ESYS_CONTEXT* esys_context, TPM2_HANDLE handler, TPM2B_P
     rc = Esys_ReadPublic(esys_context,
                          esyHandler,  // 持久句柄
                          ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE,
-                         &inPublic,
+                         inPublic,
                          NULL,
                          NULL);
     if (rc != TSS2_RC_SUCCESS) {
@@ -355,13 +381,78 @@ int load_persistent_key(ESYS_CONTEXT* esys_context, TPM2_HANDLE handler, TPM2B_P
 
     // 获取私钥部分
     rc = Esys_GetCapability(esys_context, ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE,
-                            TPM2_CAP_PCRS, 0, 1, NULL, &inPrivate);
+                            TPM2_CAP_PCRS, 0, 1, NULL, inPrivate);
     if (rc != TSS2_RC_SUCCESS) {
         fprintf(stderr, "Esys_GetCapability failed with code 0x%x\n", rc);
         Esys_Finalize(&esys_context);
         return -1;
     }
 
-    printf("Key loaded successfully.\n");
+    printf("Key get info successfully.\n");
+    return TSS2_RC_SUCCESS;
+}
+
+int tpm_get_existed_primary(ESYS_CONTEXT* esys_context, uint32_t* primary_handle, const char** primary_blob) {
+    ESYS_TR handle = ESYS_TR_NONE;
+    TPMI_YES_NO more_data = TPM2_NO;
+    TPMS_CAPABILITY_DATA* capdata = NULL;
+
+    /* Check for the handle here to avoid causing TPM2_ReadPublic to fail loudly */
+    TSS2_RC rval = Esys_GetCapability(
+        esys_context,
+        ESYS_TR_NONE,
+        ESYS_TR_NONE,
+        ESYS_TR_NONE,
+        TPM2_CAP_HANDLES,
+        TPM2_PERSISTENT_FIRST,
+        TPM2_MAX_CAP_HANDLES,
+        &more_data,
+        &capdata);
+    if (rval != TSS2_RC_SUCCESS) {
+        LOG_ERROR("Esys_GetCapability: %s:", Tss2_RC_Decode(rval));
+        return -1;
+    }
+    TPM2_HANDLE find_handle = DEFAULT_SRK_HANDLE;
+
+    bool found = false;
+    UINT32 i;
+    TPM2_HANDLE* found_handles = capdata->data.handles.handle;
+    for (i = 0; i < capdata->data.handles.count; i++) {
+        if (find_handle == found_handles[i]) {
+            found = true;
+            break;
+        }
+    }
+
+    Esys_Free(capdata);
+
+    if (!found) {
+        *primary_handle = 0;
+        LOG_ERROR("No Provisioning Guide Spec Key Handle");
+        return -1;
+    }
+    rval = Esys_TR_FromTPMPublic(
+        esys_context,
+        find_handle,
+        ESYS_TR_NONE,
+        ESYS_TR_NONE,
+        ESYS_TR_NONE,
+        &handle);
+    if (rval != TSS2_RC_SUCCESS) {
+        LOG_ERROR("Esys_TR_FromTPMPublic: %s:", Tss2_RC_Decode(rval));
+        return -1;
+    }
+    uint8_t* buffer = NULL;
+    size_t size = 0;
+    rval = Esys_TR_Serialize(esys_context,
+                             handle,
+                             &buffer, &size);
+    if (rval != TSS2_RC_SUCCESS) {
+        LOG_ERROR("Esys_TR_Serialize: %s:", Tss2_RC_Decode(rval));
+        return -1;
+    }
+
+    *primary_handle = handle;
+
     return TSS2_RC_SUCCESS;
 }
