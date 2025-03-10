@@ -23,8 +23,6 @@ int test_tpm2_app_init() {
     rs = kyss_tpm_get_app_primary(t_ctx, DEFAULT_SRK_HANDLE,  &primaryHandle, &primary_blob);
     assert_int_equal(rs, CKR_OK);
 
-//    tpm_session_stop(t_ctx);
-
     return 0;
 }
 
@@ -36,9 +34,9 @@ int test_tpm2_create_sub_key() {
     assert_int_equal(rs, CKR_OK);
 
     ESYS_TR primaryHandle = ESYS_TR_NONE;    // 存储主密钥句柄
-//    const char* primary_blob = NULL;
-//    rs = kyss_tpm_get_app_primary(t_ctx,DEFAULT_SRK_HANDLE, &primaryHandle, &primary_blob);
-//    assert_int_equal(rs, CKR_OK);
+    const char* primary_blob = NULL;
+    rs = kyss_tpm_get_app_primary(t_ctx,DEFAULT_SRK_HANDLE, &primaryHandle, &primary_blob);
+    assert_int_equal(rs, CKR_OK);
 
     rs = tpm_session_start(t_ctx, "qwe123!@#", primaryHandle);
     assert_int_equal(rs, CKR_OK);
@@ -46,11 +44,12 @@ int test_tpm2_create_sub_key() {
     ESYS_TR out_handle;
     TPM2B_PUBLIC* out_pub;
     TPM2B_PRIVATE *out_priv;
-    const char* password = "qwer1234";
+    const char* password = "qwe123!@#";
     rs = kyss_tpm_generate_key_from_primary(t_ctx, primaryHandle, password,
                                             &out_handle, &out_pub, &out_priv);
     assert_int_equal(rs, CKR_OK);
 
+    tpm_flushcontext(t_ctx,out_handle);
     tpm_session_stop(t_ctx);
 
     return 0;

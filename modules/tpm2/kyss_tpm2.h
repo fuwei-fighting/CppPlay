@@ -57,27 +57,13 @@ CK_RS kyss_tpm_generate_key_from_primary(tpm_ctx* tcx,
                                          TPM2B_PUBLIC** out_pub,
                                          TPM2B_PRIVATE** out_priv);
 
-static CK_RS tpm_create_load(tpm_ctx* t_ctx, ESYS_TR parent,
-                             ESYS_TR session, TPM2B_SENSITIVE_CREATE* in_sens,
-                             const TPM2B_PUBLIC* in_pub,
-                             ESYS_TR* out_handle,
-                             TPM2B_PUBLIC** out_pub,
-                             TPM2B_PRIVATE** out_priv);
-
 CK_RS kyss_tpm_encrypt_rsa(tpm_op_data* tpm_enc_data, CK_BYTE_PTR ctext, CK_ULONG ctextlen,
                            CK_BYTE_PTR ptext, CK_ULONG_PTR ptextlen);
 
-/**
- * @description: get existed primary
- * @param esys_context
- * @param primary_handle
- * @param primary_blob
- * @return
- */
-CK_RS tpm_get_existed_primary(tpm_ctx* t_ctx, uint32_t* primary_handle, const char** primary_blob);
-
 CK_RS tpm_session_start(tpm_ctx* ctx, const char* auth, uint32_t handle);
 CK_RS tpm_session_stop(tpm_ctx* ctx);
+
+bool tpm_flushcontext(tpm_ctx* ctx, uint32_t handle);
 
 static bool set_esys_auth(ESYS_CONTEXT* esys_ctx, ESYS_TR handle, const char* auth);
 

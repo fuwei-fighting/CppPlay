@@ -229,7 +229,6 @@ CK_RS kyss_tpm_app_init(tpm_ctx* t_ctx, TPMI_DH_PERSISTENT evict_handle, const c
     /* TODO use proper template ? */
     // https://trustedcomputinggroup.org/wp-content/uploads/Credential_Profile_EK_V2.0_R14_published.pdf
     // https://trustedcomputinggroup.org/wp-content/uploads/TCG_PC_Client_Platform_TPM_Profile_PTP_2.0_r1.03_v22.pdf
-    TPM2B_PUBLIC pub_test = {0};
     TPM2B_PUBLIC pub_template = {
         .size = 0,
         .publicArea = {
@@ -263,20 +262,9 @@ CK_RS kyss_tpm_app_init(tpm_ctx* t_ctx, TPMI_DH_PERSISTENT evict_handle, const c
     ESYS_TR hierarchy = ESYS_TR_RH_OWNER;
 
     TPM2B_AUTH hieararchy_auth = {0};
-    if (strlen(password) > sizeof(hieararchy_auth.buffer)) {
-        return CKR_GENERAL_ERROR;
-    }
-
     hieararchy_auth.size = strlen(password);
     memcpy(hieararchy_auth.buffer, password, hieararchy_auth.size);
-    //        inSensitive.sensitive.userAuth = hieararchy_auth;
-
-    rc = Esys_TR_SetAuth(t_ctx->esys_ctx, ESYS_TR_RH_OWNER, &hieararchy_auth);
-    if (rc != TSS2_RC_SUCCESS) {
-        LOGE("Esys_TR_SetAuth: %s:", Tss2_RC_Decode(rc));
-        tpm_session_stop(t_ctx);
-        return CKR_GENERAL_ERROR;
-    }
+    inSensitive.sensitive.userAuth = hieararchy_auth;
 
     TPM2B_PUBLIC* outPublic = NULL;  // 公钥部分
 
@@ -288,7 +276,7 @@ CK_RS kyss_tpm_app_init(tpm_ctx* t_ctx, TPMI_DH_PERSISTENT evict_handle, const c
 
     ESYS_TR primary_handle = ESYS_TR_NONE;
     rc = Esys_CreatePrimary(t_ctx->esys_ctx,
-                            ESYS_TR_RH_OWNER,
+                            hierarchy,
                             ESYS_TR_PASSWORD, ESYS_TR_NONE, ESYS_TR_NONE,
                             &inSensitive,
                             &pub_template,
@@ -301,7 +289,6 @@ CK_RS kyss_tpm_app_init(tpm_ctx* t_ctx, TPMI_DH_PERSISTENT evict_handle, const c
                             &ticket);  // 创建票据
     if (rc != TSS2_RC_SUCCESS) {
         LOGE("Esys_CreatePrimary: %s:", Tss2_RC_Decode(rc));
-        tpm_session_stop(t_ctx);
         return CKR_GENERAL_ERROR;
     }
 
@@ -312,7 +299,7 @@ CK_RS kyss_tpm_app_init(tpm_ctx* t_ctx, TPMI_DH_PERSISTENT evict_handle, const c
 
     ESYS_TR new_handle = ESYS_TR_NONE;
     rc = Esys_EvictControl(t_ctx->esys_ctx,
-                           ESYS_TR_RH_OWNER,
+                           hierarchy,
                            primary_handle,
                            ESYS_TR_PASSWORD,
                            ESYS_TR_NONE,
@@ -321,9 +308,15 @@ CK_RS kyss_tpm_app_init(tpm_ctx* t_ctx, TPMI_DH_PERSISTENT evict_handle, const c
                            &new_handle);
     if (rc != TSS2_RC_SUCCESS) {
         LOGE("Esys_EvictControl: %s:", Tss2_RC_Decode(rc));
-        tpm_session_stop(t_ctx);
         return CKR_GENERAL_ERROR;
     }
+
+    //        rc = Esys_TR_SetAuth(t_ctx->esys_ctx, hierarchy, &hieararchy_auth);
+    //        if (rc != TSS2_RC_SUCCESS) {
+    //            LOGE("Esys_TR_SetAuth: %s:", Tss2_RC_Decode(rc));
+    //            tpm_session_stop(t_ctx);
+    //            return CKR_GENERAL_ERROR;
+    //        }
 
     return CKR_OK;
 }
@@ -376,6 +369,7 @@ CK_RS kyss_tpm_get_app_primary(tpm_ctx* t_ctx, uint32_t default_handle, uint32_t
         &handle);
     if (rval != TSS2_RC_SUCCESS) {
         LOGE("Esys_TR_FromTPMPublic: %s:", Tss2_RC_Decode(rval));
+        tpm_flushcontext(t_ctx, find_handle);
         return -1;
     }
     uint8_t* buffer = NULL;
@@ -385,11 +379,11 @@ CK_RS kyss_tpm_get_app_primary(tpm_ctx* t_ctx, uint32_t default_handle, uint32_t
                              &buffer, &size);
     if (rval != TSS2_RC_SUCCESS) {
         LOGE("Esys_TR_Serialize: %s:", Tss2_RC_Decode(rval));
+        tpm_flushcontext(t_ctx, handle);
         return -1;
     }
 
     *primary_handle = handle;
-    t_ctx->h_session = handle;
 
     return TSS2_RC_SUCCESS;
 }
@@ -417,9 +411,11 @@ CK_RS kyss_tpm_generate_key_from_primary(tpm_ctx* tcx,
     TPM2B_DIGEST* creation_hash = NULL;
     TPMT_TK_CREATION* creation_ticket = NULL;
 
+    ESYS_TR parentHandle = parent;
+
     rc = Esys_Create(tcx->esys_ctx,
-                     parent,
-                     ESYS_TR_PASSWORD, ESYS_TR_NONE, ESYS_TR_NONE,
+                     parentHandle,
+                     tcx->h_session, ESYS_TR_NONE, ESYS_TR_NONE,
                      &in_priv,
                      &in_pub,
                      &outside_info,
@@ -430,6 +426,7 @@ CK_RS kyss_tpm_generate_key_from_primary(tpm_ctx* tcx,
                      &creation_ticket);
     if (rc != TPM2_RC_SUCCESS) {
         LOGE("Esys_Create: %s", Tss2_RC_Decode(rc));
+        tpm_session_stop(tcx);
         return rc;
     }
 
@@ -445,133 +442,18 @@ CK_RS kyss_tpm_generate_key_from_primary(tpm_ctx* tcx,
                    ESYS_TR_NONE, *out_priv, *out_pub, &loadedKeyHandle);
     if (rc != TSS2_RC_SUCCESS) {
         LOGE("Error esys load:%s", Tss2_RC_Decode(rc));
+        tpm_flushcontext(tcx, loadedKeyHandle);
         return rc;
     }
 
     rc = Esys_TR_SetAuth(tcx->esys_ctx, loadedKeyHandle, &passwordAuth);
     if (rc != TSS2_RC_SUCCESS) {
         LOGE("Esys_TR_SetAuth: %s:", Tss2_RC_Decode(rc));
+        tpm_flushcontext(tcx, loadedKeyHandle);
         return CKR_GENERAL_ERROR;
     }
 
     *out_handle = loadedKeyHandle;
-
-    return TSS2_RC_SUCCESS;
-}
-
-CK_RS tpm_create_load(tpm_ctx* t_ctx, ESYS_TR parent,
-                      ESYS_TR session, TPM2B_SENSITIVE_CREATE* in_sens,
-                      const TPM2B_PUBLIC* in_pub,
-                      ESYS_TR* out_handle,
-                      TPM2B_PUBLIC** out_pub,
-                      TPM2B_PRIVATE** out_priv) {
-    TSS2_RC rval;
-
-    TPM2B_DATA outside_info = TPM2B_EMPTY_INIT;
-    TPML_PCR_SELECTION creation_pcr = {.count = 0};
-    TPM2B_CREATION_DATA* creation_data = NULL;
-    TPM2B_DIGEST* creation_hash = NULL;
-    TPMT_TK_CREATION* creation_ticket = NULL;
-
-    rval = Esys_Create(t_ctx->esys_ctx,
-                       parent,
-                       session, ESYS_TR_NONE, ESYS_TR_NONE,
-                       in_sens,
-                       in_pub,
-                       &outside_info,
-                       &creation_pcr,
-                       out_priv,
-                       out_pub,
-                       &creation_data,
-                       &creation_hash,
-                       &creation_ticket);
-    if (rval != TPM2_RC_SUCCESS) {
-        LOGE("Esys_Create: %s", Tss2_RC_Decode(rval));
-        return rval;
-    }
-
-    Esys_Free(creation_data);
-    Esys_Free(creation_hash);
-    Esys_Free(creation_ticket);
-
-    if (!out_handle)
-        return TSS2_RC_SUCCESS;
-
-    rval = Esys_Load(t_ctx->esys_ctx,
-                     parent,
-                     t_ctx->h_session, ESYS_TR_NONE, ESYS_TR_NONE,
-                     *out_priv,
-                     *out_pub,
-                     out_handle);
-    if (rval != TPM2_RC_SUCCESS) {
-        LOGE("Esys_Load: %s", Tss2_RC_Decode(rval));
-        return rval;
-    }
-
-    return TSS2_RC_SUCCESS;
-}
-
-CK_RS tpm_get_existed_primary(tpm_ctx* t_ctx, uint32_t* primary_handle, const char** primary_blob) {
-    ESYS_TR handle = ESYS_TR_NONE;
-    TPMI_YES_NO more_data = TPM2_NO;
-    TPMS_CAPABILITY_DATA* capdata = NULL;
-
-    /* Check for the handle here to avoid causing TPM2_ReadPublic to fail loudly */
-    TSS2_RC rval = Esys_GetCapability(
-        t_ctx->esys_ctx,
-        ESYS_TR_NONE,
-        ESYS_TR_NONE,
-        ESYS_TR_NONE,
-        TPM2_CAP_HANDLES,
-        TPM2_PERSISTENT_FIRST,
-        TPM2_MAX_CAP_HANDLES,
-        &more_data,
-        &capdata);
-    if (rval != TSS2_RC_SUCCESS) {
-        LOGE("Esys_GetCapability: %s:", Tss2_RC_Decode(rval));
-        return -1;
-    }
-    TPM2_HANDLE find_handle = DEFAULT_SRK_HANDLE;
-
-    bool found = false;
-    UINT32 i;
-    TPM2_HANDLE* found_handles = capdata->data.handles.handle;
-    for (i = 0; i < capdata->data.handles.count; i++) {
-        if (find_handle == found_handles[i]) {
-            found = true;
-            break;
-        }
-    }
-
-    Esys_Free(capdata);
-
-    if (!found) {
-        *primary_handle = 0;
-        LOGE("No Provisioning Guide Spec Key Handle");
-        return -1;
-    }
-    rval = Esys_TR_FromTPMPublic(
-        t_ctx->esys_ctx,
-        find_handle,
-        ESYS_TR_NONE,
-        ESYS_TR_NONE,
-        ESYS_TR_NONE,
-        &handle);
-    if (rval != TSS2_RC_SUCCESS) {
-        LOGE("Esys_TR_FromTPMPublic: %s:", Tss2_RC_Decode(rval));
-        return -1;
-    }
-    uint8_t* buffer = NULL;
-    size_t size = 0;
-    rval = Esys_TR_Serialize(t_ctx->esys_ctx,
-                             handle,
-                             &buffer, &size);
-    if (rval != TSS2_RC_SUCCESS) {
-        LOGE("Esys_TR_Serialize: %s:", Tss2_RC_Decode(rval));
-        return -1;
-    }
-
-    *primary_handle = handle;
 
     return TSS2_RC_SUCCESS;
 }
@@ -625,6 +507,7 @@ CK_RS tpm_session_start(tpm_ctx* ctx, const char* auth, uint32_t handle) {
                                        &session);
     if (rc != TSS2_RC_SUCCESS) {
         LOGE("Esys_StartAuthSession: %s", Tss2_RC_Decode(rc));
+        Esys_FlushContext(ctx->esys_ctx, session);
         return CKR_GENERAL_ERROR;
     }
 
@@ -658,6 +541,18 @@ CK_RS tpm_session_stop(tpm_ctx* ctx) {
     ctx->h_session = 0;
 
     return CKR_OK;
+}
+
+bool tpm_flushcontext(tpm_ctx* ctx, uint32_t handle) {
+    TSS2_RC rval = Esys_FlushContext(
+        ctx->esys_ctx,
+        handle);
+    if (rval != TSS2_RC_SUCCESS) {
+        LOGE("Esys_FlushContext: %s", Tss2_RC_Decode(rval));
+        return false;
+    }
+
+    return true;
 }
 
 //////////////////////////////////////////  create app handle  //////////////////////////////////////////////////////
