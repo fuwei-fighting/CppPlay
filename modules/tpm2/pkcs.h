@@ -5,9 +5,24 @@
 #ifndef TPM2_PKCS_H
 #define TPM2_PKCS_H
 
+#define ck_key_type_t CK_KEY_TYPE
+typedef unsigned long ck_key_type_t;
+
+#define ck_object_handle_t CK_OBJECT_HANDLE;
+typedef unsigned long ck_object_handle_t;
+
 #define CKF_LIBRARY_CANT_CREATE_OS_THREADS (1UL << 0)
 #define CKF_OS_LOCKING_OK (1UL << 1)
 
+typedef unsigned char CK_BYTE;
+typedef unsigned char CK_CHAR;
+typedef unsigned long int CK_ULONG;
+typedef long int CK_LONG;
+
+typedef CK_BYTE* CK_BYTE_PTR;
+typedef CK_CHAR* CK_CHAR_PTR;
+typedef CK_ULONG* CK_ULONG_PTR;
+// error
 #define CKR_OK (0UL)
 #define CKR_CANCEL (1UL)
 #define CKR_HOST_MEMORY (2UL)

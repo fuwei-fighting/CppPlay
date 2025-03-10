@@ -13,12 +13,20 @@
 #include <tss2/tss2_rc.h>
 #include <tss2/tss2_tctildr.h>
 
+#include <string.h>
+#include <stdbool.h>
+
+#define DEFAULT_SRK_HANDLE 0x81010020
 /* config env var for TCTI context */
 #define TPM2_PKCS11_TCTI "TPM2_PKCS11_TCTI"
 
 typedef unsigned long CK_RS;  // result
 
 typedef struct tpm_ctx tpm_ctx;
+
+typedef struct tpm_op_data tpm_op_data;
+
+typedef struct tobject tobject;
 
 /**
  * @description: init tpm context (from tcti context)
@@ -27,5 +35,52 @@ typedef struct tpm_ctx tpm_ctx;
  */
 CK_RS kyss_tpm_ctx_new(const char* config, tpm_ctx** tctx);
 CK_RS kyss_tpm_ctx_new_fromtcti(void* tcti, tpm_ctx** tctx);
+
+/**
+ * @brief tpm根据软件进行初始化，创建系统级全局主密钥。
+ * @param app
+ * @return
+ */
+CK_RS kyss_tpm_app_init(tpm_ctx* t_ctx, TPMI_DH_PERSISTENT evict_handle, const char* password);
+
+/**
+ * @brief 根据app获取当前的系统主密钥；
+ * @param app
+ * @return
+ */
+CK_RS kyss_tpm_get_app_primary(tpm_ctx* t_ctx, uint32_t default_handle, uint32_t* primary_handle, const char** primary_blob);
+
+CK_RS kyss_tpm_generate_key_from_primary(tpm_ctx* tcx,
+                                         uint32_t parent,
+                                         const char* password,
+                                         ESYS_TR* out_handle,
+                                         TPM2B_PUBLIC** out_pub,
+                                         TPM2B_PRIVATE** out_priv);
+
+static CK_RS tpm_create_load(tpm_ctx* t_ctx, ESYS_TR parent,
+                             ESYS_TR session, TPM2B_SENSITIVE_CREATE* in_sens,
+                             const TPM2B_PUBLIC* in_pub,
+                             ESYS_TR* out_handle,
+                             TPM2B_PUBLIC** out_pub,
+                             TPM2B_PRIVATE** out_priv);
+
+CK_RS kyss_tpm_encrypt_rsa(tpm_op_data* tpm_enc_data, CK_BYTE_PTR ctext, CK_ULONG ctextlen,
+                           CK_BYTE_PTR ptext, CK_ULONG_PTR ptextlen);
+
+/**
+ * @description: get existed primary
+ * @param esys_context
+ * @param primary_handle
+ * @param primary_blob
+ * @return
+ */
+CK_RS tpm_get_existed_primary(tpm_ctx* t_ctx, uint32_t* primary_handle, const char** primary_blob);
+
+CK_RS tpm_session_start(tpm_ctx* ctx, const char* auth, uint32_t handle);
+CK_RS tpm_session_stop(tpm_ctx* ctx);
+
+static bool set_esys_auth(ESYS_CONTEXT* esys_ctx, ESYS_TR handle, const char* auth);
+
+static TPMI_DH_PERSISTENT get_or_create_handle(const char* app_name);
 
 #endif  //TPM2_KYSS_TPM2_H
