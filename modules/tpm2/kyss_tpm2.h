@@ -20,6 +20,9 @@
 /* config env var for TCTI context */
 #define TPM2_PKCS11_TCTI "TPM2_PKCS11_TCTI"
 
+/* The PCR index used to seal/unseal the passphrase */
+#define CRYPTFS_TPM2_PCR_INDEX 7
+
 typedef unsigned long CK_RS;  // result
 
 typedef struct tpm_ctx tpm_ctx;

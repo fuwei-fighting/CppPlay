@@ -406,7 +406,17 @@ CK_RS kyss_tpm_generate_key_from_primary(tpm_ctx* tcx,
     in_priv.sensitive.userAuth = passwordAuth;
 
     TPM2B_DATA outside_info = TPM2B_EMPTY_INIT;
-    TPML_PCR_SELECTION creation_pcr = {.count = 0};
+
+    unsigned int pcr_index = CRYPTFS_TPM2_PCR_INDEX;
+    TPML_PCR_SELECTION creation_pcr = {
+        .count = 1,
+        .pcrSelections = {
+            {
+                .hash = TPM2_ALG_SHA256,
+                .sizeofSelect = 3,
+                .pcrSelect = {ESYS_TR_PCR7, ESYS_TR_PCR0, ESYS_TR_PCR0}  // 选择 PCR 0-7
+            }}};
+
     TPM2B_CREATION_DATA* creation_data = NULL;
     TPM2B_DIGEST* creation_hash = NULL;
     TPMT_TK_CREATION* creation_ticket = NULL;
