@@ -53,6 +53,16 @@ CK_RS kyss_tpm_app_init(tpm_ctx* t_ctx, TPMI_DH_PERSISTENT evict_handle, const c
  */
 CK_RS kyss_tpm_get_app_primary(tpm_ctx* t_ctx, uint32_t default_handle, uint32_t* primary_handle, const char** primary_blob);
 
+/**
+ * @brief 根据主密钥创建子密钥
+ * @param tcx
+ * @param parent
+ * @param password
+ * @param out_handle
+ * @param out_pub
+ * @param out_priv
+ * @return
+ */
 CK_RS kyss_tpm_generate_key_from_primary(tpm_ctx* tcx,
                                          uint32_t parent,
                                          const char* password,
@@ -60,8 +70,16 @@ CK_RS kyss_tpm_generate_key_from_primary(tpm_ctx* tcx,
                                          TPM2B_PUBLIC** out_pub,
                                          TPM2B_PRIVATE** out_priv);
 
-CK_RS kyss_tpm_encrypt_rsa(tpm_op_data* tpm_enc_data, CK_BYTE_PTR ctext, CK_ULONG ctextlen,
-                           CK_BYTE_PTR ptext, CK_ULONG_PTR ptextlen);
+CK_RS kyss_tpm_encrypt_rsa(tpm_ctx* tcx, uint32_t handle, const char* password, const char* ctext, unsigned int ctextlen,
+                           char* ptext, unsigned int* ptextlen);
+
+CK_RS kyss_tpm_decrypt_rsa(tpm_ctx* tcx, uint32_t handle, const char* password, const char* ptext, unsigned int ptextlen,
+                           char* ctext, unsigned int* ctextlen);
+
+int test_esys_rsa_encrypt_decrypt(tpm_ctx* tcx);
+
+CK_RS tpm_encrypt_rsa(tpm_op_data* tpm_enc_data, CK_BYTE_PTR ctext, CK_ULONG ctextlen,
+                      CK_BYTE_PTR ptext, CK_ULONG_PTR ptextlen);
 
 CK_RS tpm_session_start(tpm_ctx* ctx, const char* auth, uint32_t handle);
 CK_RS tpm_session_stop(tpm_ctx* ctx);

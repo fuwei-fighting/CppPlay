@@ -152,8 +152,94 @@ error:
     return CKR_GENERAL_ERROR;
 }
 
-CK_RS kyss_tpm_encrypt_rsa(tpm_op_data* tpm_enc_data, CK_BYTE_PTR ctext, CK_ULONG ctextlen,
-                           CK_BYTE_PTR ptext, CK_ULONG_PTR ptextlen) {
+CK_RS kyss_tpm_encrypt_rsa(tpm_ctx* tcx, uint32_t handle, const char* password, const char* ctext, unsigned int ctextlen,
+                           char* ptext, unsigned int* ptextlen) {
+    LOGV("Performing TPM RSA encrypt");
+
+    CK_RS rv = CKR_GENERAL_ERROR;
+
+    bool result = set_esys_auth(tcx->esys_ctx, handle, password);
+    if (!result) {
+        return CKR_GENERAL_ERROR;
+    }
+
+    TPM2B_PUBLIC_KEY_RSA cipher_text = {.size = ctextlen};
+    if (ctextlen > sizeof(cipher_text.buffer)) {
+        return CKR_ARGUMENTS_BAD;
+    }
+    memcpy(cipher_text.buffer, ctext, ctextlen);
+
+    TPMT_RSA_DECRYPT in_scheme = {.scheme = TPM2_ALG_RSAES};  // 解密方案
+    TPM2B_PUBLIC_KEY_RSA* decrypted_text = NULL;              // 解密后的明文
+
+    /***** 加密数据  encrypt ****/
+    rv = Esys_RSA_Encrypt(tcx->esys_ctx,
+                          handle,
+                          ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE,
+                          &cipher_text,
+                          &in_scheme,
+                          NULL,  // label
+                          &decrypted_text);
+    if (rv != TSS2_RC_SUCCESS) {
+        LOGE("Esys_RSA_Encrypt: %s", Tss2_RC_Decode(rv));
+        tpm_flushcontext(tcx, handle);
+        return CKR_GENERAL_ERROR;
+    }
+
+    *ptextlen = decrypted_text->size;
+    memcpy(ptext, decrypted_text->buffer, decrypted_text->size);
+
+    rv = CKR_OK;
+
+    printf("rsa key encryped: indata = %.*s, outData = %.*s\n", cipher_text.size, cipher_text.buffer, *ptextlen, ptext);
+    free(decrypted_text);
+    return rv;
+}
+
+CK_RS kyss_tpm_decrypt_rsa(tpm_ctx* tcx, uint32_t handle, const char* password, const char* ptext, unsigned int ptextlen,
+                           char* ctext, unsigned int* ctextlen) {
+    LOGV("Performing TPM RSA Decrypt");
+
+    CK_RS rv = CKR_GENERAL_ERROR;
+
+    ESYS_TR keyHandle = handle;
+
+    bool result = set_esys_auth(tcx->esys_ctx, keyHandle, password);
+    if (!result) {
+        return CKR_GENERAL_ERROR;
+    }
+
+    TPM2B_PUBLIC_KEY_RSA decrypted_text = {.size = ptextlen};
+    if (ptextlen > sizeof(decrypted_text.buffer)) {
+        return CKR_ARGUMENTS_BAD;
+    }
+    memcpy(decrypted_text.buffer, ptext, ptextlen);
+
+    TPMT_RSA_DECRYPT in_scheme = {.scheme = TPM2_ALG_RSAES};  // 解密方案
+    TPM2B_PUBLIC_KEY_RSA* encrypted_text = NULL;
+
+    rv = Esys_RSA_Decrypt(tcx->esys_ctx,
+                          handle,
+                          ESYS_TR_PASSWORD, ESYS_TR_NONE, ESYS_TR_NONE,
+                          &decrypted_text,
+                          &in_scheme,
+                          NULL,
+                          &encrypted_text);
+    if (rv != TSS2_RC_SUCCESS) {
+        LOGE("Esys_RSA_Decrypt: %s", Tss2_RC_Decode(rv));
+        tpm_flushcontext(tcx, handle);
+        return CKR_GENERAL_ERROR;
+    }
+
+    *ctextlen = encrypted_text->size;
+    memcpy(ctext, encrypted_text->buffer, encrypted_text->size);
+
+    printf("rsa key decryped: indata = %.*s, outData = %.*s\n", decrypted_text.size, decrypted_text.buffer, *ctextlen, ctext);
+    return CKR_OK;
+}
+
+CK_RS tpm_encrypt_rsa(tpm_op_data* tpm_enc_data, CK_BYTE_PTR ctext, CK_ULONG ctextlen,
+                      CK_BYTE_PTR ptext, CK_ULONG_PTR ptextlen) {
     LOGV("Performing TPM RSA Decrypt");
 
     CK_RS rv = CKR_GENERAL_ERROR;
@@ -229,6 +315,32 @@ CK_RS kyss_tpm_app_init(tpm_ctx* t_ctx, TPMI_DH_PERSISTENT evict_handle, const c
     /* TODO use proper template ? */
     // https://trustedcomputinggroup.org/wp-content/uploads/Credential_Profile_EK_V2.0_R14_published.pdf
     // https://trustedcomputinggroup.org/wp-content/uploads/TCG_PC_Client_Platform_TPM_Profile_PTP_2.0_r1.03_v22.pdf
+    TPM2B_PUBLIC inPub_rsa = {
+        .size = 0,
+        .publicArea = {
+            .type = TPM2_ALG_RSA,
+            .nameAlg = TPM2_ALG_SHA1,
+            .objectAttributes = (TPMA_OBJECT_USERWITHAUTH |
+                                 TPMA_OBJECT_DECRYPT |
+                                 TPMA_OBJECT_FIXEDTPM |
+                                 TPMA_OBJECT_FIXEDPARENT |
+                                 TPMA_OBJECT_SENSITIVEDATAORIGIN),
+            .authPolicy = {
+                .size = 0,
+            },
+            .parameters.rsaDetail = {
+                .symmetric = {.algorithm = TPM2_ALG_NULL},
+                .scheme = {.scheme = TPM2_ALG_RSAES},
+                .keyBits = 2048,
+                .exponent = 0,
+            },
+            .unique.rsa = {
+                .size = 0,
+                .buffer = {},
+            },
+        },
+    };
+
     TPM2B_PUBLIC pub_template = {
         .size = 0,
         .publicArea = {
@@ -456,12 +568,12 @@ CK_RS kyss_tpm_generate_key_from_primary(tpm_ctx* tcx,
         return rc;
     }
 
-    rc = Esys_TR_SetAuth(tcx->esys_ctx, loadedKeyHandle, &passwordAuth);
-    if (rc != TSS2_RC_SUCCESS) {
-        LOGE("Esys_TR_SetAuth: %s:", Tss2_RC_Decode(rc));
-        tpm_flushcontext(tcx, loadedKeyHandle);
-        return CKR_GENERAL_ERROR;
-    }
+    //    rc = Esys_TR_SetAuth(tcx->esys_ctx, loadedKeyHandle, &passwordAuth);
+    //    if (rc != TSS2_RC_SUCCESS) {
+    //        LOGE("Esys_TR_SetAuth: %s:", Tss2_RC_Decode(rc));
+    //        tpm_flushcontext(tcx, loadedKeyHandle);
+    //        return CKR_GENERAL_ERROR;
+    //    }
 
     *out_handle = loadedKeyHandle;
 
@@ -563,6 +675,148 @@ bool tpm_flushcontext(tpm_ctx* ctx, uint32_t handle) {
     }
 
     return true;
+}
+
+int test_esys_rsa_encrypt_decrypt(tpm_ctx* tcx) {
+    TSS2_RC r;
+    ESYS_TR primaryHandle = ESYS_TR_NONE;
+
+    TPM2B_AUTH authValuePrimary = {
+        .size = 5,
+        .buffer = {1, 2, 3, 4, 5}};
+
+    TPM2B_SENSITIVE_CREATE inSensitivePrimary = {
+        .size = 4,
+        .sensitive = {
+            .userAuth = {
+                .size = 0,
+                .buffer = {0},
+            },
+            .data = {
+                .size = 0,
+                .buffer = {0},
+            },
+        },
+    };
+
+    inSensitivePrimary.sensitive.userAuth = authValuePrimary;
+
+    TPM2B_PUBLIC inPublic = {
+        .size = 0,
+        .publicArea = {
+            .type = TPM2_ALG_RSA,
+            .nameAlg = TPM2_ALG_SHA1,
+            .objectAttributes = (TPMA_OBJECT_USERWITHAUTH |
+                                 TPMA_OBJECT_DECRYPT |
+                                 TPMA_OBJECT_FIXEDTPM |
+                                 TPMA_OBJECT_FIXEDPARENT |
+                                 TPMA_OBJECT_SENSITIVEDATAORIGIN),
+            .authPolicy = {
+                .size = 0,
+            },
+            .parameters.rsaDetail = {
+                .symmetric = {.algorithm = TPM2_ALG_NULL},
+                .scheme = {.scheme = TPM2_ALG_RSAES},
+                .keyBits = 2048,
+                .exponent = 0,
+            },
+            .unique.rsa = {
+                .size = 0,
+                .buffer = {},
+            },
+        },
+    };
+
+    TPM2B_DATA outsideInfo = {
+        .size = 0,
+        .buffer = {},
+    };
+
+    TPML_PCR_SELECTION creationPCR = {
+        .count = 0,
+    };
+
+    TPM2B_AUTH authValue = {
+        .size = 0,
+        .buffer = {}};
+
+    r = Esys_TR_SetAuth(tcx->esys_ctx, ESYS_TR_RH_OWNER, &authValue);
+
+    TPM2B_PUBLIC* outPublic;
+    TPM2B_CREATION_DATA* creationData;
+    TPM2B_DIGEST* creationHash;
+    TPMT_TK_CREATION* creationTicket;
+
+    for (int mode = 0; mode <= 2; mode++) {
+        if (mode == 0) {
+            inPublic.publicArea.parameters.rsaDetail.scheme.scheme =
+                TPM2_ALG_NULL;
+        } else if (mode == 1) {
+            inPublic.publicArea.parameters.rsaDetail.scheme.scheme =
+                TPM2_ALG_RSAES;
+        } else if (mode == 2) {
+            inPublic.publicArea.parameters.rsaDetail.scheme.scheme =
+                TPM2_ALG_OAEP;
+            inPublic.publicArea.parameters.rsaDetail.scheme.details.oaep.hashAlg = TPM2_ALG_SHA1;
+        }
+
+        r = Esys_CreatePrimary(tcx->esys_ctx, ESYS_TR_RH_OWNER, ESYS_TR_PASSWORD,
+                               ESYS_TR_NONE, ESYS_TR_NONE, &inSensitivePrimary,
+                               &inPublic, &outsideInfo, &creationPCR,
+                               &primaryHandle, &outPublic, &creationData,
+                               &creationHash, &creationTicket);
+
+        r = Esys_TR_SetAuth(tcx->esys_ctx, primaryHandle,
+                            &authValuePrimary);
+        const char* message = "hello this is message.!@#$4";
+        CK_BYTE_PTR enMessage = NULL;
+        CK_ULONG_PTR ptextlen = NULL;
+        CK_BYTE_PTR ptext = NULL;
+        TPM2B_PUBLIC_KEY_RSA cipher_text = {.size = strlen(message)};
+        memcpy(cipher_text.buffer, message, strlen(message));
+        size_t plain_size = 3;
+        TPM2B_PUBLIC_KEY_RSA plain = {.size = plain_size, .buffer = {1, 2, 3}};
+        TPMT_RSA_DECRYPT scheme;
+        TPM2B_DATA null_data = {.size = 0, .buffer = {}};
+        TPM2B_PUBLIC_KEY_RSA* cipher;
+
+        if (mode == 0) {
+            scheme.scheme = TPM2_ALG_NULL;
+        } else if (mode == 1) {
+            scheme.scheme = TPM2_ALG_RSAES;
+        } else if (mode == 2) {
+            scheme.scheme = TPM2_ALG_OAEP;
+            scheme.details.oaep.hashAlg = TPM2_ALG_SHA1;
+        }
+        r = Esys_RSA_Encrypt(tcx->esys_ctx, primaryHandle, ESYS_TR_NONE,
+                             ESYS_TR_NONE, ESYS_TR_NONE, &cipher_text, &scheme,
+                             &null_data, &cipher);
+
+        TPM2B_PUBLIC_KEY_RSA* plain2;
+        r = Esys_RSA_Decrypt(tcx->esys_ctx, primaryHandle,
+                             ESYS_TR_PASSWORD, ESYS_TR_NONE, ESYS_TR_NONE,
+                             cipher, &scheme, &null_data, &plain2);
+
+        if (mode > 0 && memcmp(&cipher_text.buffer[0], &plain2->buffer[0], cipher_text.size)) {
+            LOGE("plain texts are not equal for mode %i", mode);
+            goto error;
+        }
+
+        printf("aes key encryped: indata = %.*s, outData = %.*s\n", cipher_text.size, cipher_text.buffer, plain2->size, plain2->buffer);
+
+        r = Esys_FlushContext(tcx->esys_ctx, primaryHandle);
+    }
+    return EXIT_SUCCESS;
+
+error:
+
+    if (primaryHandle != ESYS_TR_NONE) {
+        if (Esys_FlushContext(tcx->esys_ctx, primaryHandle) != TSS2_RC_SUCCESS) {
+            LOGE("Cleanup primaryHandle failed.");
+        }
+    }
+
+    return EXIT_FAILURE;
 }
 
 //////////////////////////////////////////  create app handle  //////////////////////////////////////////////////////

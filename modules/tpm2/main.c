@@ -7,7 +7,10 @@
 
 int main(int argc, char* argv[]) {
     //    test_tpm2_app_init();
-    test_tpm2_create_sub_key();
+    //    test_tpm2_create_sub_key();
+    test_tpm2_encrypt_decrypt();
+
+    //    test_esys_rsa();
 
     return TPM2_RC_SUCCESS;
 }
