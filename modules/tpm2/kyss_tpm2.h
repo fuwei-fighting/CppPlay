@@ -27,10 +27,6 @@ typedef unsigned long CK_RS;  // result
 
 typedef struct tpm_ctx tpm_ctx;
 
-typedef struct tpm_op_data tpm_op_data;
-
-typedef struct tobject tobject;
-
 /**
  * @description: init tpm context (from tcti context)
  * @param config
@@ -69,25 +65,68 @@ CK_RS kyss_tpm_generate_key_from_primary(tpm_ctx* tcx,
                                          ESYS_TR* out_handle,
                                          TPM2B_PUBLIC** out_pub,
                                          TPM2B_PRIVATE** out_priv);
-
+/**
+ * @brief 使用指定密钥进行rsa加密
+ * @param tcx
+ * @param handle
+ * @param password
+ * @param ctext
+ * @param ctextlen
+ * @param ptext
+ * @param ptextlen
+ * @return
+ */
 CK_RS kyss_tpm_encrypt_rsa(tpm_ctx* tcx, uint32_t handle, const char* password, const char* ctext, unsigned int ctextlen,
                            char* ptext, unsigned int* ptextlen);
-
+/**
+ * @brief 使用指定密钥进行rsa解密
+ * @param tcx
+ * @param handle
+ * @param password
+ * @param ctext
+ * @param ctextlen
+ * @param ptext
+ * @param ptextlen
+ * @return
+ */
 CK_RS kyss_tpm_decrypt_rsa(tpm_ctx* tcx, uint32_t handle, const char* password, const char* ptext, unsigned int ptextlen,
                            char* ctext, unsigned int* ctextlen);
 
-int test_esys_rsa_encrypt_decrypt(tpm_ctx* tcx);
-
-CK_RS tpm_encrypt_rsa(tpm_op_data* tpm_enc_data, CK_BYTE_PTR ctext, CK_ULONG ctextlen,
-                      CK_BYTE_PTR ptext, CK_ULONG_PTR ptextlen);
-
+/**
+ * @brief 开启tpm会话
+ * @param ctx
+ * @param auth
+ * @param handle
+ * @return
+ */
 CK_RS tpm_session_start(tpm_ctx* ctx, const char* auth, uint32_t handle);
+
+/**
+ * @brief 关闭tpm会话
+ * @param ctx
+ * @return
+ */
 CK_RS tpm_session_stop(tpm_ctx* ctx);
 
+/**
+ * @brief 关闭指定tpm handle
+ * @param ctx
+ * @param handle
+ * @return
+ */
 bool tpm_flushcontext(tpm_ctx* ctx, uint32_t handle);
 
-static bool set_esys_auth(ESYS_CONTEXT* esys_ctx, ESYS_TR handle, const char* auth);
+/**
+ * @brief 设置授权值（输入密码）
+ * @param esys_ctx
+ * @param handle
+ * @param auth
+ * @return
+ */
+bool set_esys_auth(ESYS_CONTEXT* esys_ctx, ESYS_TR handle, const char* auth);
 
+///// @deprecated
 static TPMI_DH_PERSISTENT get_or_create_handle(const char* app_name);
+int test_esys_rsa_encrypt_decrypt(tpm_ctx* tcx);
 
 #endif  //TPM2_KYSS_TPM2_H

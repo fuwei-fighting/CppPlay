@@ -238,70 +238,6 @@ CK_RS kyss_tpm_decrypt_rsa(tpm_ctx* tcx, uint32_t handle, const char* password, 
     return CKR_OK;
 }
 
-CK_RS tpm_encrypt_rsa(tpm_op_data* tpm_enc_data, CK_BYTE_PTR ctext, CK_ULONG ctextlen,
-                      CK_BYTE_PTR ptext, CK_ULONG_PTR ptextlen) {
-    LOGV("Performing TPM RSA Decrypt");
-
-    CK_RS rv = CKR_GENERAL_ERROR;
-
-    tpm_ctx* ctx = tpm_enc_data->ctx;
-    TPMT_RSA_DECRYPT* scheme = &tpm_enc_data->rsa.raw;
-    TPM2B_DATA* label = &tpm_enc_data->rsa.label;
-    /*
- * Validate that the data to perform the operation on, typically
- * ciphertext on RSA decrypt, fits in the buffer for the TPM and
- * populate it.
- */
-    TPM2B_PUBLIC_KEY_RSA tpm_ctext = {.size = ctextlen};
-    if (ctextlen > sizeof(tpm_ctext.buffer)) {
-        return CKR_ARGUMENTS_BAD;
-    }
-    memcpy(tpm_ctext.buffer, ctext, ctextlen);
-    const char* auth = tpm_enc_data->tobj->unsealed_auth;
-    ESYS_TR handle = tpm_enc_data->tobj->tpm_handle;
-    bool result = set_esys_auth(ctx->esys_ctx, handle, auth);
-    if (!result) {
-        return CKR_GENERAL_ERROR;
-    }
-
-    TPM2B_PUBLIC_KEY_RSA* tpm_ptext;
-    TSS2_RC rc = Esys_RSA_Decrypt(
-        ctx->esys_ctx,
-        handle,
-        ctx->h_session,
-        ESYS_TR_NONE,
-        ESYS_TR_NONE,
-        &tpm_ctext,
-        scheme,
-        label,
-        &tpm_ptext);
-    if (rc != TPM2_RC_SUCCESS) {
-        LOGE("Esys_RSA_Decrypt: %s", Tss2_RC_Decode(rc));
-        return CKR_GENERAL_ERROR;
-    }
-    if (!ptext) {
-        *ptextlen = tpm_ctext.size;
-        rv = CKR_OK;
-        goto out;
-    }
-
-    if (*ptextlen < tpm_ctext.size) {
-        *ptextlen = tpm_ctext.size;
-        rv = CKR_BUFFER_TOO_SMALL;
-        goto out;
-    }
-
-    *ptextlen = tpm_ptext->size;
-    memcpy(ptext, tpm_ptext->buffer, tpm_ptext->size);
-
-    rv = CKR_OK;
-
-out:
-    free(tpm_ptext);
-
-    return rv;
-}
-
 CK_RS kyss_tpm_app_init(tpm_ctx* t_ctx, TPMI_DH_PERSISTENT evict_handle, const char* password) {
     TSS2_RC rc;
     TPM2B_SENSITIVE_CREATE inSensitive = {
@@ -422,13 +358,6 @@ CK_RS kyss_tpm_app_init(tpm_ctx* t_ctx, TPMI_DH_PERSISTENT evict_handle, const c
         LOGE("Esys_EvictControl: %s:", Tss2_RC_Decode(rc));
         return CKR_GENERAL_ERROR;
     }
-
-    //        rc = Esys_TR_SetAuth(t_ctx->esys_ctx, hierarchy, &hieararchy_auth);
-    //        if (rc != TSS2_RC_SUCCESS) {
-    //            LOGE("Esys_TR_SetAuth: %s:", Tss2_RC_Decode(rc));
-    //            tpm_session_stop(t_ctx);
-    //            return CKR_GENERAL_ERROR;
-    //        }
 
     return CKR_OK;
 }
@@ -568,19 +497,13 @@ CK_RS kyss_tpm_generate_key_from_primary(tpm_ctx* tcx,
         return rc;
     }
 
-    //    rc = Esys_TR_SetAuth(tcx->esys_ctx, loadedKeyHandle, &passwordAuth);
-    //    if (rc != TSS2_RC_SUCCESS) {
-    //        LOGE("Esys_TR_SetAuth: %s:", Tss2_RC_Decode(rc));
-    //        tpm_flushcontext(tcx, loadedKeyHandle);
-    //        return CKR_GENERAL_ERROR;
-    //    }
 
     *out_handle = loadedKeyHandle;
 
     return TSS2_RC_SUCCESS;
 }
 
-static bool set_esys_auth(ESYS_CONTEXT* esys_ctx, ESYS_TR handle, const char* auth) {
+ bool set_esys_auth(ESYS_CONTEXT* esys_ctx, ESYS_TR handle, const char* auth) {
     TPM2B_AUTH tpm_auth = TPM2B_EMPTY_INIT;
 
     if (auth) {
