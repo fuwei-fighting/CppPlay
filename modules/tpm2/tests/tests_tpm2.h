@@ -25,8 +25,14 @@ int test_tpm2_create_sub_key();
  */
 int test_tpm2_encrypt_decrypt();
 
+/**
+ * @brief tpm使用policy创建密钥等操作
+ * @return
+ */
+int test_tpm2_policy();
 
-int test_esys_rsa();
+int test_tpm2_sym_endecrypt();
+
 
 
 #endif //TPM2_TESTS_TPM2_H

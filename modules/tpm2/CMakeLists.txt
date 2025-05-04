@@ -5,9 +5,9 @@ project(${PROJECT_NAME})
 
 set(CMAKE_CXX_STANDARD 11)
 
-set(TEST_SRC tests/tests_tpm2.c tests/tests_tpm2.h)
+set(TEST_SRC tests/tests_tpm2.c tests/tests_tpm2.h )
 
-add_executable(${PROJECT_NAME} main.c kyss_tpm2.h kyss_tpm2.c log.h pkcs.h ${TEST_SRC})
+add_executable(${PROJECT_NAME} main.c kyss_tpm2.h kyss_tpm2.c log.h pkcs.h kyss_common.h kyss_common.c ${TEST_SRC})
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/../../CMakeLists.txt)
 

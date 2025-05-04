@@ -45,8 +45,9 @@ int test_tpm2_create_sub_key() {
     TPM2B_PUBLIC* out_pub;
     TPM2B_PRIVATE *out_priv;
     const char* password = "qwe123!@#";
-    rs = kyss_tpm_generate_key_from_primary(t_ctx, primaryHandle, password,
+    rs = kyss_tpm_generate_key_by_password(t_ctx, primaryHandle, password,
                                             &out_handle, &out_pub, &out_priv);
+
     assert_int_equal(rs, CKR_OK);
 
     tpm_flushcontext(t_ctx,out_handle);
@@ -73,8 +74,9 @@ int test_tpm2_encrypt_decrypt() {
     TPM2B_PUBLIC* out_pub;
     TPM2B_PRIVATE *out_priv;
     const char* password = "qwe123!@#";
-    rs = kyss_tpm_generate_key_from_primary(t_ctx, primaryHandle, password,
+    rs = kyss_tpm_generate_key_by_password(t_ctx, primaryHandle, password,
                                             &out_handle, &out_pub, &out_priv);
+
     assert_int_equal(rs, CKR_OK);
     const char* cipher_text = "hello this is message.!@#$4";
     char encrypt_msg[1024] = {0};
@@ -93,14 +95,40 @@ int test_tpm2_encrypt_decrypt() {
     return 0;
 }
 
-int test_esys_rsa() {
+int test_tpm2_policy() {
     CK_RS rs = CKR_GENERAL_ERROR;
     tpm_ctx* t_ctx = NULL;
     rs = kyss_tpm_ctx_new(NULL, &t_ctx);
     assert_int_equal(rs, CKR_OK);
 
-    test_esys_rsa_encrypt_decrypt(t_ctx);
+    ESYS_TR primaryHandle = ESYS_TR_NONE;    // 存储主密钥句柄
+    TPM2B_PUBLIC* out_pub;
+    TPM2B_PRIVATE *out_priv;
+    rs = kyss_tpm_generate_primary_by_policy_pcr(t_ctx, &out_pub, &out_priv);
+    assert_int_equal(rs, CKR_OK);
+
+//
+
+//    rs = kyss_tpm_generate_key_by_primary(t_ctx, primaryHandle, &out_pub, &out_priv);
+//    assert_int_equal(rs, CKR_OK);
+//    const char* password = "qwe123!@#";
+//    rs = kyss_tpm_generate_key_by_password(t_ctx, primaryHandle, password,
+//                                           &out_handle, &out_pub, &out_priv);
+//    assert_int_equal(rs, CKR_OK);
+//
+//    tpm_flushcontext(t_ctx,primaryHandle);
 
     return 0;
 }
 
+int test_tpm2_sym_endecrypt() {
+    CK_RS rs = CKR_GENERAL_ERROR;
+    tpm_ctx* t_ctx = NULL;
+    rs = kyss_tpm_ctx_new(NULL, &t_ctx);
+    assert_int_equal(rs, CKR_OK);
+
+    rs = test_esys_encrypt_decrypt_sym(t_ctx->esys_ctx);
+    assert_int_equal(rs, CKR_OK);
+
+    return 0;
+}

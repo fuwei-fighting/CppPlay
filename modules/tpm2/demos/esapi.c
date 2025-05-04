@@ -530,6 +530,12 @@ int test_esys_encrypt_decrypt(ESYS_CONTEXT* esys_context) {
             .userAuth = {
                 .size = 0,
                 .buffer = {0}},
+            .data = {.size = 16, .buffer = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 16}}}};    TPM2B_SENSITIVE_CREATE inSensitive2 = {
+        .size = 1,
+        .sensitive = {
+            .userAuth = {
+                .size = 0,
+                .buffer = {0}},
             .data = {.size = 16, .buffer = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 16}}}};
 
     inSensitive2.sensitive.userAuth = authKey2;

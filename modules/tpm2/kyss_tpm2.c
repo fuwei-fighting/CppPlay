@@ -4,74 +4,66 @@
 #include <assert.h>
 #include "kyss_tpm2.h"
 
-#define TPM2B_INIT(xsize) \
-    { .size = xsize, }
-#define TPM2B_EMPTY_INIT TPM2B_INIT(0)
+#define DEFAULT_PCRS (0b000000000000000000010101)
+#define DEFAULT_BANKS (0b11)
 
-#define TPM2_ERROR_TSS2_RC_ERROR_MASK 0xFFFF
+#define TPM2TOTP_BANK_SHA1 (1 << 0)
+#define TPM2TOTP_BANK_SHA256 (1 << 1)
+#define TPM2TOTP_BANK_SHA384 (1 << 2)
 
-static inline UINT16 tpm2_error_get(TSS2_RC rc) {
-    return ((rc & TPM2_ERROR_TSS2_RC_ERROR_MASK));
-}
+#define TPM2B_PUBLIC_PRIMARY_TEMPLATE                               \
+    {                                                               \
+        .size = 0,                                                  \
+        .publicArea = {                                             \
+            .type = TPM2_ALG_ECC,                                   \
+            .nameAlg = TPM2_ALG_SHA256,                             \
+            .objectAttributes = (TPMA_OBJECT_USERWITHAUTH |         \
+                                 TPMA_OBJECT_RESTRICTED |           \
+                                 TPMA_OBJECT_DECRYPT |              \
+                                 TPMA_OBJECT_NODA |                 \
+                                 TPMA_OBJECT_FIXEDTPM |             \
+                                 TPMA_OBJECT_FIXEDPARENT |          \
+                                 TPMA_OBJECT_SENSITIVEDATAORIGIN),  \
+            .authPolicy = {                                         \
+                .size = 0,                                          \
+            },                                                      \
+            .parameters.eccDetail = {                               \
+                .symmetric = {                                      \
+                    .algorithm = TPM2_ALG_AES,                      \
+                    .keyBits.aes = 128,                             \
+                    .mode.aes = TPM2_ALG_CFB,                       \
+                },                                                  \
+                .scheme = {.scheme = TPM2_ALG_NULL, .details = {}}, \
+                .curveID = TPM2_ECC_NIST_P256,                      \
+                .kdf = {.scheme = TPM2_ALG_NULL, .details = {}},    \
+            },                                                      \
+            .unique.ecc = {.x.size = 0, .y.size = 0}                \
+        }                                                           \
+    }
 
-struct tpm_ctx {
-    TSS2_TCTI_CONTEXT* tcti_ctx;
-    ESYS_CONTEXT* esys_ctx;
-
-    ESYS_TR h_session;
-};
-
-struct tpm_op_data {
-    tpm_ctx* ctx;
-
-    tobject* tobj;
-
-    CK_KEY_TYPE op_type;
-
-    union {
-        struct {
-            TPMT_SIG_SCHEME sig;
-            TPMT_RSA_DECRYPT raw;
-            TPM2B_DATA label;
-        } rsa;
-        struct {
-            TPMI_ALG_SYM_MODE mode;
-            TPM2B_IV iv;
-            //            struct {
-            //                BIGNUM *counter;
-            //            } ctr;
-            struct {
-                CK_ULONG len;
-                CK_BYTE data[16];
-            } prev;
-        } sym;
-        struct {
-            TPMT_SIG_SCHEME sig;
-        } ecc;
-    };
-};
-
-struct tobject {
-    uint32_t tpm_handle;
-
-    const char* unsealed_auth;
-
-    const char* pub;     /** public tpm data */
-    const char* priv;    /** private tpm data */
-    const char* objauth; /** wrapped object auth value */
-};
+#define TPM2B_SENSITIVE_CREATE_TEMPLATE {.size = 0,                                  \
+                                         .sensitive = {                              \
+                                             .userAuth = {.size = 0, .buffer = {0}}, \
+                                             .data = {.size = 0, .buffer = {0}},     \
+                                         }};
 
 static const TPM2B_PUBLIC rsa_template = {
     .size = 0,
     .publicArea = {
         .type = TPM2_ALG_RSA,
-        .nameAlg = TPM2_ALG_SHA256,
+        .nameAlg = TPM2_ALG_SHA256,  // 计算key自身摘要，防止key被非法替换
         .objectAttributes =
-            TPMA_OBJECT_FIXEDTPM | TPMA_OBJECT_FIXEDPARENT | TPMA_OBJECT_SENSITIVEDATAORIGIN | TPMA_OBJECT_USERWITHAUTH | TPMA_OBJECT_DECRYPT | TPMA_OBJECT_SIGN_ENCRYPT,
+            TPMA_OBJECT_FIXEDTPM |
+            TPMA_OBJECT_FIXEDPARENT |
+            TPMA_OBJECT_SENSITIVEDATAORIGIN |
+            TPMA_OBJECT_USERWITHAUTH |
+            TPMA_OBJECT_DECRYPT |
+            TPMA_OBJECT_SIGN_ENCRYPT,
         .authPolicy = {
-            .size = 0,
+            .size = 0,  // 授权信息
         },
         .parameters.rsaDetail = {
+            // 使用的算法参数
             .symmetric = {
                 .algorithm = TPM2_ALG_NULL,
             },
@@ -80,6 +72,7 @@ static const TPM2B_PUBLIC rsa_template = {
             .exponent = 0,
         },
         .unique.rsa = {
+            // 非对称密钥的公钥部分 && 其他密钥key自身的摘要
             .size = 0,
         },
     },
@@ -108,6 +101,27 @@ static const TPM2B_PUBLIC ecc_template = {
         .unique.ecc = {.x = {.size = 0, .buffer = {}}, .y = {.size = 0, .buffer = {}}},
     },
 };
+
+static const TPM2B_PUBLIC hmac_template = {
+    .size = 0,
+    .publicArea = {
+        .type = TPM2_ALG_KEYEDHASH,
+        .nameAlg = TPM2_ALG_SHA256,
+        .objectAttributes = (TPMA_OBJECT_SIGN_ENCRYPT),
+        .authPolicy = {
+            .size = 0,
+            .buffer = {0}},
+        .parameters.keyedHashDetail.scheme = {.scheme = TPM2_ALG_HMAC, .details = {.hmac = {.hashAlg = TPM2_ALG_SHA1}}},
+        .unique.keyedHash = {
+            .size = 0,
+            .buffer = {0},
+        },
+    }};
+
+TPM2B_DATA allOutsideInfo = {
+    .size = 0,
+};
+TPML_PCR_SELECTION allCreationPCR = {.count = 0};
 
 CK_RS kyss_tpm_ctx_new(const char* config, tpm_ctx** tctx) {
     TSS2_TCTI_CONTEXT* tcti_context = NULL;
@@ -240,13 +254,13 @@ CK_RS kyss_tpm_decrypt_rsa(tpm_ctx* tcx, uint32_t handle, const char* password, 
 
 CK_RS kyss_tpm_app_init(tpm_ctx* t_ctx, TPMI_DH_PERSISTENT evict_handle, const char* password) {
     TSS2_RC rc;
-    TPM2B_SENSITIVE_CREATE inSensitive = {
-        .size = 1,
-        .sensitive = {
-            .userAuth = {
-                .size = 0,
-                .buffer = {0}},
-        }};
+    TPM2B_SENSITIVE_CREATE inSensitive = {// 敏感数据
+                                          .size = 1,
+                                          .sensitive = {
+                                              .userAuth = {// 存储密码，用于password授权
+                                                           .size = 0,
+                                                           .buffer = {0}},
+                                          }};
 
     /* TODO use proper template ? */
     // https://trustedcomputinggroup.org/wp-content/uploads/Credential_Profile_EK_V2.0_R14_published.pdf
@@ -281,7 +295,7 @@ CK_RS kyss_tpm_app_init(tpm_ctx* t_ctx, TPMI_DH_PERSISTENT evict_handle, const c
         .size = 0,
         .publicArea = {
             .type = TPM2_ALG_ECC,
-            .nameAlg = TPM2_ALG_SHA256,
+            .nameAlg = TPM2_ALG_SHA256,  // 计算key自身的摘要
             .objectAttributes = (TPMA_OBJECT_USERWITHAUTH |
                                  TPMA_OBJECT_RESTRICTED |
                                  TPMA_OBJECT_DECRYPT |
@@ -429,12 +443,12 @@ CK_RS kyss_tpm_get_app_primary(tpm_ctx* t_ctx, uint32_t default_handle, uint32_t
     return TSS2_RC_SUCCESS;
 }
 
-CK_RS kyss_tpm_generate_key_from_primary(tpm_ctx* tcx,
-                                         uint32_t parent,
-                                         const char* password,
-                                         ESYS_TR* out_handle,
-                                         TPM2B_PUBLIC** out_pub,
-                                         TPM2B_PRIVATE** out_priv) {
+CK_RS kyss_tpm_generate_key_by_password(tpm_ctx* tcx,
+                                        uint32_t parent,
+                                        const char* password,
+                                        ESYS_TR* out_handle,
+                                        TPM2B_PUBLIC** out_pub,
+                                        TPM2B_PRIVATE** out_priv) {
     CK_RS rc = CKR_GENERAL_ERROR;
 
     TPM2B_PUBLIC in_pub = rsa_template;
@@ -496,113 +510,340 @@ CK_RS kyss_tpm_generate_key_from_primary(tpm_ctx* tcx,
         tpm_flushcontext(tcx, loadedKeyHandle);
         return rc;
     }
-
-
     *out_handle = loadedKeyHandle;
 
     return TSS2_RC_SUCCESS;
 }
 
- bool set_esys_auth(ESYS_CONTEXT* esys_ctx, ESYS_TR handle, const char* auth) {
-    TPM2B_AUTH tpm_auth = TPM2B_EMPTY_INIT;
+CK_RS kyss_tpm_generate_primary_by_policy_pcr(tpm_ctx* tcx,
+                                              TPM2B_PUBLIC** out_pub,
+                                              TPM2B_PRIVATE** out_priv) {
+    CK_RS rc = CKR_GENERAL_ERROR;
+    ESYS_TR primary_handle;
+    TPM2B_PUBLIC primaryPublic = TPM2B_PUBLIC_PRIMARY_TEMPLATE;
+    TPM2B_SENSITIVE_CREATE primarySensitive = TPM2B_SENSITIVE_CREATE_TEMPLATE;
+#if 0
+    TPML_PCR_SELECTION *pcrcheck, pcrsel = {.count = 0};
+    uint32_t pcrs = DEFAULT_PCRS;
+    uint32_t banks = DEFAULT_BANKS;
 
-    if (auth) {
-        size_t auth_len = strlen(auth);
-        if (auth_len > sizeof(tpm_auth.buffer)) {
-            LOGE("Auth value too large, got %zu expected < %zu",
-                 auth_len, sizeof(tpm_auth.buffer));
-            return false;
+    if ((banks & TPM2TOTP_BANK_SHA1)) {
+        pcrsel.pcrSelections[pcrsel.count].hash = TPM2_ALG_SHA1;
+        pcrsel.count++;
+    }
+    if ((banks & TPM2TOTP_BANK_SHA256)) {
+        pcrsel.pcrSelections[pcrsel.count].hash = TPM2_ALG_SHA256;
+        pcrsel.count++;
+    }
+    if ((banks & TPM2TOTP_BANK_SHA384)) {
+        pcrsel.pcrSelections[pcrsel.count].hash = TPM2_ALG_SHA384;
+        pcrsel.count++;
+    }
+
+    for (size_t i = 0; i < pcrsel.count; i++) {
+        pcrsel.pcrSelections[i].sizeofSelect = 3;
+        pcrsel.pcrSelections[i].pcrSelect[0] = pcrs & 0xff;
+        pcrsel.pcrSelections[i].pcrSelect[1] = pcrs >> 8 & 0xff;
+        pcrsel.pcrSelections[i].pcrSelect[2] = pcrs >> 16 & 0xff;
+    }
+
+    size_t secret_size = 0;
+    uint8_t* secret;
+    TPM2B_DIGEST* tDigest;
+    secret = malloc(20);
+    if (!secret) {
+        LOGE("secret create failed.");
+        return -1;
+    }
+    while (secret_size < 20) {
+        rc = Esys_GetRandom(tcx->esys_ctx,
+                            ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE,
+                            20 - secret_size, &tDigest);
+        if (rc != TSS2_RC_SUCCESS) {
+            LOGE("Error Esys_GetRandom:%s", Tss2_RC_Decode(rc));
+            return rc;
         }
 
-        tpm_auth.size = auth_len;
-        memcpy(tpm_auth.buffer, auth, auth_len);
+        memcpy(&(secret)[secret_size], &tDigest->buffer[0], tDigest->size);
+        secret_size += tDigest->size;
+        free(tDigest);
     }
-
-    TSS2_RC rval = Esys_TR_SetAuth(esys_ctx, handle, &tpm_auth);
-    if (rval != TSS2_RC_SUCCESS) {
-        LOGE("Esys_TR_SetAuth: 0x%x:", rval);
-        return false;
+        rc = Esys_PCR_Read(tcx->esys_ctx,
+                       ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE,
+                       &pcrsel, NULL, &pcrcheck, NULL);
+    if (rc != TSS2_RC_SUCCESS) {
+        LOGE("Error esys load:%s", Tss2_RC_Decode(rc));
+        return rc;
     }
-    return true;
-}
-
-CK_RS tpm_session_start(tpm_ctx* ctx, const char* auth, uint32_t handle) {
-    assert(!ctx->h_session);
-
-    bool res = set_esys_auth(ctx->esys_ctx, handle, auth);
-    if (!res) {
+    if (pcrcheck->count == 0) {
+        LOGE("No active banks selected", Tss2_RC_Decode(rc));
+        return -1;
+    }
+#endif
+    rc = Esys_CreatePrimary(tcx->esys_ctx, ESYS_TR_RH_OWNER,
+                            ESYS_TR_PASSWORD, ESYS_TR_NONE, ESYS_TR_NONE,
+                            &primarySensitive, &primaryPublic,
+                            &allOutsideInfo, &allCreationPCR,
+                            &primary_handle, NULL, NULL, NULL, NULL);
+    if (rc != TSS2_RC_SUCCESS) {
+        LOGE("Esys_CreatePrimary: %s:", Tss2_RC_Decode(rc));
         return CKR_GENERAL_ERROR;
     }
 
-    TPMT_SYM_DEF symmetric = {
+    ESYS_TR session;
+    TPMT_SYM_DEF sym = {
         .algorithm = TPM2_ALG_AES,
         .keyBits = {.aes = 128},
         .mode = {.aes = TPM2_ALG_CFB}};
 
-    TPMA_SESSION session_attrs =
-        TPMA_SESSION_CONTINUESESSION | TPMA_SESSION_DECRYPT | TPMA_SESSION_ENCRYPT;
-
-    ESYS_TR session = ESYS_TR_NONE;
-    TSS2_RC rc = Esys_StartAuthSession(ctx->esys_ctx,
-                                       handle,  //tpmkey
-                                       handle,  //bind
-                                       ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE,
-                                       NULL,
-                                       TPM2_SE_HMAC, &symmetric, TPM2_ALG_SHA256,
-                                       &session);
+    rc = Esys_StartAuthSession(tcx->esys_ctx, ESYS_TR_NONE, ESYS_TR_NONE,
+                               ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE,
+                               NULL, TPM2_SE_POLICY, &sym, TPM2_ALG_SHA256,
+                               &session);
     if (rc != TSS2_RC_SUCCESS) {
-        LOGE("Esys_StartAuthSession: %s", Tss2_RC_Decode(rc));
-        Esys_FlushContext(ctx->esys_ctx, session);
-        return CKR_GENERAL_ERROR;
+        LOGE("Error Esys_StartAuthSession:%s", Tss2_RC_Decode(rc));
+        return rc;
     }
 
-    //    rc = Esys_TRSess_SetAttributes(ctx->esys_ctx, session, session_attrs,
-    //                                   0xff);
-    //    if (rc != TSS2_RC_SUCCESS) {
-    //        LOGE("Esys_TRSess_SetAttributes: %s", Tss2_RC_Decode(rc));
-    //        rc = Esys_FlushContext(ctx->esys_ctx,
-    //                               session);
-    //        if (rc != TSS2_RC_SUCCESS) {
-    //            LOGW("Esys_FlushContext: %s", Tss2_RC_Decode(rc));
-    //        }
-    //        return CKR_GENERAL_ERROR;
+    TPML_PCR_SELECTION creation_pcr = {
+        .count = 1,
+        .pcrSelections = {
+            {
+                .hash = TPM2_ALG_SHA256,
+                .sizeofSelect = 3,
+                .pcrSelect = {ESYS_TR_PCR7, ESYS_TR_PCR0, ESYS_TR_PCR0}  // 选择 PCR 0-7
+            }}};
+
+    rc = Esys_PolicyPCR(tcx->esys_ctx, session,
+                        ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE,
+                        NULL, &creation_pcr);
+    if (rc != TSS2_RC_SUCCESS) {
+        LOGE("Error Esys_PolicyPCR:%s", Tss2_RC_Decode(rc));
+        Esys_FlushContext(tcx->esys_ctx, session);
+        return rc;
+    }
+    TPM2B_DIGEST* policyDigest = NULL;
+    rc = Esys_PolicyGetDigest(tcx->esys_ctx, session,
+                              ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE,
+                              &policyDigest);
+    if (rc != TSS2_RC_SUCCESS) {
+        LOGE("Error Esys_PolicyGetDigest:%s", Tss2_RC_Decode(rc));
+        Esys_FlushContext(tcx->esys_ctx, session);
+        return rc;
+    }
+
+    TPM2B_PUBLIC keyInPublicHmac = rsa_template;
+    TPM2B_SENSITIVE_CREATE keySensitive = {
+        .size = 0,
+        .sensitive = {
+            .userAuth = {.size = 0, .buffer = {0}},
+            .data = {.size = 0, .buffer = {0}},
+        }};
+    keyInPublicHmac.publicArea.authPolicy = *policyDigest;
+
+    //    keySensitive.sensitive.data.size = creation_pcr.count;
+    //    memcpy(&keySensitive.sensitive.data.buffer, creation_pcr.pcrSelections->pcrSelect, creation_pcr.count);
+
+    rc = Esys_Create(tcx->esys_ctx,
+                     primary_handle,
+                     ESYS_TR_PASSWORD, ESYS_TR_NONE, ESYS_TR_NONE,
+                     &keySensitive,
+                     &keyInPublicHmac,
+                     NULL,
+                     &creation_pcr,
+                     out_priv, out_pub,
+                     NULL,
+                     NULL,
+                     NULL);
+    if (rc != TPM2_RC_SUCCESS) {
+        LOGE("Esys_Create: %s", Tss2_RC_Decode(rc));
+        Esys_FlushContext(tcx->esys_ctx, session);
+        tpm_flushcontext(tcx, primary_handle);
+        return rc;
+    }
+
+    ESYS_TR loadHandlePub;
+
+    //    rc = Esys_LoadExternal(tcx->esys_ctx, ESYS_TR_NONE,
+    //                           ESYS_TR_NONE,
+    //                           ESYS_TR_NONE,
+    //                           NULL, *out_pub, TPM2_RH_OWNER, &loadHandlePub);
+    //    if (rc != TPM2_RC_SUCCESS) {
+    //        LOGE("Esys_LoadExternal: %s", Tss2_RC_Decode(rc));
+    //        Esys_FlushContext(tcx->esys_ctx, session);
+    //        tpm_flushcontext(tcx, primary_handle);
+    //        return rc;
     //    }
 
-    //    ctx->original_flags = session_attrs;
+    rc = tpm_load_handle(tcx, primary_handle, *out_pub, *out_priv, &loadHandlePub);
+    if (rc != TPM2_RC_SUCCESS) {
+        LOGE("tpm_load_handle: %s", Tss2_RC_Decode(rc));
+        Esys_FlushContext(tcx->esys_ctx, session);
+        tpm_flushcontext(tcx, primary_handle);
+        return rc;
+    }
 
-    ctx->h_session = session;
+    const char* ctext = "password 1234 Q!@#$%";
+    TPM2B_PUBLIC_KEY_RSA cipher_text = {.size = strlen(ctext)};
+    memcpy(cipher_text.buffer, ctext, strlen(ctext));
+    TPMT_RSA_DECRYPT in_scheme = {.scheme = TPM2_ALG_RSAES};  // 解密方案
+    TPM2B_PUBLIC_KEY_RSA* encrypted_text = NULL;              // 解密后的明文
 
-    return CKR_OK;
-}
-
-CK_RS tpm_session_stop(tpm_ctx* ctx) {
-    TSS2_RC rc = Esys_FlushContext(ctx->esys_ctx,
-                                   ctx->h_session);
+    /***** 加密数据  encrypt ****/
+    rc = Esys_RSA_Encrypt(tcx->esys_ctx,
+                          loadHandlePub,
+                          ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE,
+                          &cipher_text,
+                          &in_scheme,
+                          NULL,  // label
+                          &encrypted_text);
     if (rc != TSS2_RC_SUCCESS) {
-        LOGE("Esys_FlushContext: %s", Tss2_RC_Decode(rc));
+        LOGE("Esys_RSA_Encrypt: %s", Tss2_RC_Decode(rc));
+        tpm_flushcontext(tcx, loadHandlePub);
         return CKR_GENERAL_ERROR;
     }
 
-    ctx->h_session = 0;
+    ESYS_TR loadHandlePri;
 
-    return CKR_OK;
-}
-
-bool tpm_flushcontext(tpm_ctx* ctx, uint32_t handle) {
-    TSS2_RC rval = Esys_FlushContext(
-        ctx->esys_ctx,
-        handle);
-    if (rval != TSS2_RC_SUCCESS) {
-        LOGE("Esys_FlushContext: %s", Tss2_RC_Decode(rval));
-        return false;
+    rc = Esys_LoadExternal(tcx->esys_ctx, ESYS_TR_NONE,
+                           ESYS_TR_NONE,
+                           ESYS_TR_NONE,
+                           NULL, *out_pub, TPM2_RH_OWNER, &loadHandlePri);
+    if (rc != TPM2_RC_SUCCESS) {
+        LOGE("Esys_LoadExternal: %s", Tss2_RC_Decode(rc));
+        Esys_FlushContext(tcx->esys_ctx, session);
+        tpm_flushcontext(tcx, primary_handle);
+        return rc;
     }
 
-    return true;
+    //    rc = tpm_load_handle(tcx, primary_handle, *out_pub, *out_priv, &loadHandlePri);
+    //    if (rc != TPM2_RC_SUCCESS) {
+    //        LOGE("tpm_load_handle: %s", Tss2_RC_Decode(rc));
+    //        Esys_FlushContext(tcx->esys_ctx, session);
+    //        tpm_flushcontext(tcx, primary_handle);
+    //        return rc;
+    //    }
+
+    TPM2B_PUBLIC_KEY_RSA* decrypted_text = NULL;
+    rc = Esys_RSA_Decrypt(tcx->esys_ctx,
+                          loadHandlePri,
+                          ESYS_TR_PASSWORD, ESYS_TR_NONE, ESYS_TR_NONE,
+                          encrypted_text,
+                          &in_scheme,
+                          NULL,
+                          &decrypted_text);
+    if (rc != TSS2_RC_SUCCESS) {
+        LOGE("Esys_RSA_Decrypt: %s", Tss2_RC_Decode(rc));
+        tpm_flushcontext(tcx, loadHandlePri);
+        return CKR_GENERAL_ERROR;
+    }
+    printf("rsa key decryped: indata = %.*s, outData = %.*s\n", encrypted_text->size, encrypted_text->buffer, decrypted_text->size, decrypted_text->buffer);
+
+    Esys_FlushContext(tcx->esys_ctx, session);
+    tpm_flushcontext(tcx, primary_handle);
+    return TPM2_RC_SUCCESS;
 }
 
-int test_esys_rsa_encrypt_decrypt(tpm_ctx* tcx) {
+CK_RS kyss_tpm_generate_key_by_primary(tpm_ctx* tcx,
+                                       ESYS_TR primary_handle,
+                                       TPM2B_PUBLIC** out_pub,
+                                       TPM2B_PRIVATE** out_priv) {
+    CK_RS rc = CKR_GENERAL_ERROR;
+
+    TPM2B_PUBLIC in_pub = rsa_template;
+
+    TPM2B_SENSITIVE_CREATE in_priv = {0};
+
+    TPML_PCR_SELECTION primary_pcr = {
+        .count = 1,
+        .pcrSelections = {
+            {
+                .hash = TPM2_ALG_SHA256,
+                .sizeofSelect = 3,
+                .pcrSelect = {ESYS_TR_PCR7, ESYS_TR_PCR0, ESYS_TR_PCR0}  // 选择 PCR 0-7
+            }}};
+
+    TPMT_SYM_DEF sym = {
+        .algorithm = TPM2_ALG_AES,
+        .keyBits = {.aes = 128},
+        .mode = {.aes = TPM2_ALG_CFB}};
+
+    ESYS_TR session;
+    rc = Esys_StartAuthSession(tcx->esys_ctx, ESYS_TR_NONE, ESYS_TR_NONE,
+                               ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE,
+                               NULL, TPM2_SE_POLICY, &sym, TPM2_ALG_SHA256,
+                               &session);
+    if (rc != TSS2_RC_SUCCESS) {
+        LOGE("Error Esys_StartAuthSession:%s", Tss2_RC_Decode(rc));
+        return rc;
+    }
+    TPM2B_DIGEST* policyDigest;
+    rc = Esys_PolicyGetDigest(tcx->esys_ctx, session,
+                              ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE,
+                              &policyDigest);
+    if (rc != TSS2_RC_SUCCESS) {
+        LOGE("Error Esys_PolicyGetDigest:%s", Tss2_RC_Decode(rc));
+        Esys_FlushContext(tcx->esys_ctx, session);
+        return rc;
+    }
+
+    rc = Esys_PolicyPCR(tcx->esys_ctx, session,
+                        ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE,
+                        NULL, &primary_pcr);
+    if (rc != TSS2_RC_SUCCESS) {
+        LOGE("Error Esys_PolicyPCR:%s", Tss2_RC_Decode(rc));
+        Esys_FlushContext(tcx->esys_ctx, session);
+        return rc;
+    }
+
+    in_pub.publicArea.authPolicy = *policyDigest;
+    free(policyDigest);
+
+    TPML_PCR_SELECTION creation_pcr = {.count = 0};
+    rc = Esys_Create(tcx->esys_ctx,
+                     primary_handle,
+                     session, ESYS_TR_NONE, ESYS_TR_NONE,
+                     &in_priv,
+                     &in_pub,
+                     NULL,
+                     &creation_pcr,
+                     out_priv, out_pub,
+                     NULL,
+                     NULL,
+                     NULL);
+    if (rc != TPM2_RC_SUCCESS) {
+        LOGE("Esys_Create: %s", Tss2_RC_Decode(rc));
+        Esys_FlushContext(tcx->esys_ctx, session);
+        tpm_flushcontext(tcx, primary_handle);
+        return rc;
+    }
+
+    return TPM2_RC_SUCCESS;
+}
+
+CK_RS kyss_tpm_encrypt_rsa_pcr_policy(tpm_ctx* tcx, uint32_t handle, const char* ctext, unsigned int ctextlen,
+                                      char* ptext, unsigned int* ptextlen) {
+    LOGV("Performing TPM RSA encrypt");
+
+    CK_RS rv = CKR_GENERAL_ERROR;
+}
+
+/**
+ *
+ * @param esys_context
+ * @return
+ * TODO: 1. 需要把加解密的流程拆开
+ *       2. TPM2B_PUBLIC TPM2B_AUTH这几个结构体的作用，如何填？
+ *       3.
+ */
+int test_esys_encrypt_decrypt_sym(ESYS_CONTEXT* esys_context) {
+    /**
+     * （1） 初始化和设置授权值
+     */
     TSS2_RC r;
-    ESYS_TR primaryHandle = ESYS_TR_NONE;
+    ESYS_TR primaryHandle = ESYS_TR_NONE;    // 存储主密钥句柄
+    ESYS_TR loadedKeyHandle = ESYS_TR_NONE;  // 需要加载的子密钥句柄
+    int failure_return = EXIT_FAILURE;
 
     TPM2B_AUTH authValuePrimary = {
         .size = 5,
@@ -627,9 +868,10 @@ int test_esys_rsa_encrypt_decrypt(tpm_ctx* tcx) {
     TPM2B_PUBLIC inPublic = {
         .size = 0,
         .publicArea = {
-            .type = TPM2_ALG_RSA,
-            .nameAlg = TPM2_ALG_SHA1,
+            .type = TPM2_ALG_RSA,  // 表明这是个RSA密钥
+            .nameAlg = TPM2_ALG_SHA256,
             .objectAttributes = (TPMA_OBJECT_USERWITHAUTH |
+                                 TPMA_OBJECT_RESTRICTED |
                                  TPMA_OBJECT_DECRYPT |
                                  TPMA_OBJECT_FIXEDTPM |
                                  TPMA_OBJECT_FIXEDPARENT |
@@ -638,8 +880,8 @@ int test_esys_rsa_encrypt_decrypt(tpm_ctx* tcx) {
                 .size = 0,
             },
             .parameters.rsaDetail = {
-                .symmetric = {.algorithm = TPM2_ALG_NULL},
-                .scheme = {.scheme = TPM2_ALG_RSAES},
+                .symmetric = {.algorithm = TPM2_ALG_AES, .keyBits.aes = 128, .mode.aes = TPM2_ALG_CFB},
+                .scheme = {.scheme = TPM2_ALG_NULL},
                 .keyBits = 2048,
                 .exponent = 0,
             },
@@ -663,111 +905,258 @@ int test_esys_rsa_encrypt_decrypt(tpm_ctx* tcx) {
         .size = 0,
         .buffer = {}};
 
-    r = Esys_TR_SetAuth(tcx->esys_ctx, ESYS_TR_RH_OWNER, &authValue);
+    r = Esys_TR_SetAuth(esys_context, ESYS_TR_RH_OWNER, &authValue);  // 为 ESYS_TR_RH_OWNER 设置授权值 authValue，这是 TPM 的所有者授权值。
+    if (r != TSS2_RC_SUCCESS) {
+        LOGE("Error: TR_SetAuth:0x%x", r);
+        goto error;
+    }
 
+    /**
+     * （2）创建主密钥
+     */
     TPM2B_PUBLIC* outPublic;
     TPM2B_CREATION_DATA* creationData;
     TPM2B_DIGEST* creationHash;
     TPMT_TK_CREATION* creationTicket;
 
-    for (int mode = 0; mode <= 2; mode++) {
-        if (mode == 0) {
-            inPublic.publicArea.parameters.rsaDetail.scheme.scheme =
-                TPM2_ALG_NULL;
-        } else if (mode == 1) {
-            inPublic.publicArea.parameters.rsaDetail.scheme.scheme =
-                TPM2_ALG_RSAES;
-        } else if (mode == 2) {
-            inPublic.publicArea.parameters.rsaDetail.scheme.scheme =
-                TPM2_ALG_OAEP;
-            inPublic.publicArea.parameters.rsaDetail.scheme.details.oaep.hashAlg = TPM2_ALG_SHA1;
-        }
-
-        r = Esys_CreatePrimary(tcx->esys_ctx, ESYS_TR_RH_OWNER, ESYS_TR_PASSWORD,
-                               ESYS_TR_NONE, ESYS_TR_NONE, &inSensitivePrimary,
-                               &inPublic, &outsideInfo, &creationPCR,
-                               &primaryHandle, &outPublic, &creationData,
-                               &creationHash, &creationTicket);
-
-        r = Esys_TR_SetAuth(tcx->esys_ctx, primaryHandle,
-                            &authValuePrimary);
-        const char* message = "hello this is message.!@#$4";
-        CK_BYTE_PTR enMessage = NULL;
-        CK_ULONG_PTR ptextlen = NULL;
-        CK_BYTE_PTR ptext = NULL;
-        TPM2B_PUBLIC_KEY_RSA cipher_text = {.size = strlen(message)};
-        memcpy(cipher_text.buffer, message, strlen(message));
-        size_t plain_size = 3;
-        TPM2B_PUBLIC_KEY_RSA plain = {.size = plain_size, .buffer = {1, 2, 3}};
-        TPMT_RSA_DECRYPT scheme;
-        TPM2B_DATA null_data = {.size = 0, .buffer = {}};
-        TPM2B_PUBLIC_KEY_RSA* cipher;
-
-        if (mode == 0) {
-            scheme.scheme = TPM2_ALG_NULL;
-        } else if (mode == 1) {
-            scheme.scheme = TPM2_ALG_RSAES;
-        } else if (mode == 2) {
-            scheme.scheme = TPM2_ALG_OAEP;
-            scheme.details.oaep.hashAlg = TPM2_ALG_SHA1;
-        }
-        r = Esys_RSA_Encrypt(tcx->esys_ctx, primaryHandle, ESYS_TR_NONE,
-                             ESYS_TR_NONE, ESYS_TR_NONE, &cipher_text, &scheme,
-                             &null_data, &cipher);
-
-        TPM2B_PUBLIC_KEY_RSA* plain2;
-        r = Esys_RSA_Decrypt(tcx->esys_ctx, primaryHandle,
-                             ESYS_TR_PASSWORD, ESYS_TR_NONE, ESYS_TR_NONE,
-                             cipher, &scheme, &null_data, &plain2);
-
-        if (mode > 0 && memcmp(&cipher_text.buffer[0], &plain2->buffer[0], cipher_text.size)) {
-            LOGE("plain texts are not equal for mode %i", mode);
-            goto error;
-        }
-
-        printf("aes key encryped: indata = %.*s, outData = %.*s\n", cipher_text.size, cipher_text.buffer, plain2->size, plain2->buffer);
-
-        r = Esys_FlushContext(tcx->esys_ctx, primaryHandle);
+    // 创建主密钥，输出primaryHandle
+    r = Esys_CreatePrimary(esys_context,
+                           ESYS_TR_RH_OWNER,
+                           ESYS_TR_PASSWORD, ESYS_TR_NONE, ESYS_TR_NONE,
+                           &inSensitivePrimary, &inPublic,
+                           &outsideInfo, &creationPCR,
+                           &primaryHandle,
+                           &outPublic, &creationData, &creationHash,
+                           &creationTicket);
+    if (r != TSS2_RC_SUCCESS) {
+        LOGE("Error: esys create primary:0x%x", r);
+        goto error;
     }
+
+    // 为ESYS_TR对象（primaryHandle）设置授权值，在需要授权操作的时候使用
+    r = Esys_TR_SetAuth(esys_context, primaryHandle, &authValuePrimary);
+    if (r != TSS2_RC_SUCCESS) {
+        LOGE("Error: TR_SetAuth:0x%x", r);
+        goto error;
+    }
+
+    /**
+     * （3）创建子密钥
+     */
+    TPM2B_AUTH authKey2 = {
+        .size = 6,
+        .buffer = {6, 7, 8, 9, 10, 11}};
+
+    TPM2B_SENSITIVE_CREATE inSensitive2 = {
+        .size = 1,
+        .sensitive = {
+            .userAuth = {
+                .size = 0,
+                .buffer = {0}},
+            .data = {.size = 16, .buffer = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 16}}}};
+
+    inSensitive2.sensitive.userAuth = authKey2;
+
+    TPM2B_PUBLIC inPublic2 = {
+        .size = 0,
+        .publicArea = {
+            .type = TPM2_ALG_SYMCIPHER,
+            .nameAlg = TPM2_ALG_SHA256,
+            .objectAttributes = (TPMA_OBJECT_USERWITHAUTH |
+                                 TPMA_OBJECT_SIGN_ENCRYPT |
+                                 TPMA_OBJECT_DECRYPT),
+
+            .authPolicy = {
+                .size = 0,
+            },
+            .parameters.symDetail = {.sym = {.algorithm = TPM2_ALG_AES,  // 表明这是个AES对称密钥
+                                             .keyBits = {.aes = 128},
+                                             .mode = {.aes = TPM2_ALG_CFB}}},
+            .unique.sym = {.size = 0, .buffer = {}}}};
+
+    TPM2B_DATA outsideInfo2 = {
+        .size = 0,
+        .buffer = {},
+    };
+
+    TPML_PCR_SELECTION creationPCR2 = {
+        .count = 0,
+    };
+
+    TPM2B_PUBLIC* outPublic2;
+    TPM2B_PRIVATE* outPrivate2;
+    TPM2B_CREATION_DATA* creationData2;
+    TPM2B_DIGEST* creationHash2;
+    TPMT_TK_CREATION* creationTicket2;
+
+    // Esys_Create 函数用于在 TPM 中创建一个新的对象（如密钥），并返回该对象的私有部分和公共部分。
+    // 这个函数通常在主密钥下创建子密钥或其他对象。创建的对象在 TPM 内部是未加载的，即它们不在 TPM 的当前会话中可用，需要通过 Esys_Load 函数加载到 TPM 中才能使用。
+    r = Esys_Create(esys_context,
+                    primaryHandle,
+                    ESYS_TR_PASSWORD, ESYS_TR_NONE, ESYS_TR_NONE,
+                    &inSensitive2,
+                    &inPublic2,
+                    &outsideInfo2,
+                    &creationPCR2,
+                    &outPrivate2,
+                    &outPublic2,
+                    &creationData2, &creationHash2, &creationTicket2);
+    if (r != TSS2_RC_SUCCESS) {
+        LOGE("Error esys create:0x%x", r);
+        goto error;
+    }
+
+    printf("AES key created.\n");
+
+    /**
+     * （4）加载子密钥
+     */
+    // Esys_Load 函数用于将之前创建的 TPM 对象加载到 TPM 中，使其在当前会话中可用。加载后的对象可以用于各种 TPM 操作，如加密、解密、签名等。
+    r = Esys_Load(esys_context,
+                  primaryHandle,
+                  ESYS_TR_PASSWORD,
+                  ESYS_TR_NONE,
+                  ESYS_TR_NONE, outPrivate2, outPublic2, &loadedKeyHandle);
+    if (r != TSS2_RC_SUCCESS) {
+        LOGE("Error esys load:0x%x", r);
+        goto error;
+    }
+
+    printf("AES key loaded.\n");
+
+    // 为加载的子密钥设置授权值 authKey2
+    r = Esys_TR_SetAuth(esys_context, loadedKeyHandle, &authKey2);
+    if (r != TSS2_RC_SUCCESS) {
+        LOGE("Error esys TR_SetAuth:0x%x", r);
+        goto error;
+    }
+
+    /**
+     * （5）加密和解密数据
+     */
+    ESYS_TR keyHandle_handle = loadedKeyHandle;
+    TPMI_YES_NO decrypt = TPM2_YES;          // 设置为 TPM2_YES，表示进行解密操作。
+    TPMI_YES_NO encrypt = TPM2_NO;           // 设置为 TPM2_NO，表示不进行加密操作
+    TPMI_ALG_SYM_MODE mode = TPM2_ALG_NULL;  //  设置为 TPM2_ALG_NULL，表示不使用特定的加密模式。
+
+    TPM2B_DIGEST* randomBytes;
+    r = Esys_GetRandom(esys_context, ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE, 16, &randomBytes);
+    if (r != TPM2_RC_SUCCESS) {
+        LOGE("GetRandom FAILED! Response Code : 0x%x", r);
+        goto error;
+    }
+
+    // 初始化向量（IV），用于加密和解密操作。
+    TPM2B_IV ivIn = {
+        .size = 16,
+        .buffer = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 16}};
+    // 输入数据，需要被加密或解密的数据。
+
+    TPM2B_IV ivRandom = {.size = randomBytes->size};
+    memcpy(ivRandom.buffer, randomBytes->buffer, randomBytes->size);
+
+    TPM2B_MAX_BUFFER inData = {
+        .size = 16,
+        .buffer = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 16}};
+    const char* plaintext = "my message";
+    inData.size = strlen(plaintext);
+    memcpy(inData.buffer, plaintext, inData.size);
+    // 输出数据和输出初始化向量，由 Esys_EncryptDecrypt 函数分配内存。
+    TPM2B_MAX_BUFFER* outData;
+    TPM2B_IV* ivOut;
+
+    /***** 加密数据  encrypt ****/
+    r = Esys_EncryptDecrypt(
+        esys_context,
+        keyHandle_handle,
+        ESYS_TR_PASSWORD,
+        ESYS_TR_NONE,
+        ESYS_TR_NONE,
+        encrypt,
+        mode,
+        &ivRandom,
+        &inData,
+        &outData,
+        &ivOut);
+
+    if ((r == TPM2_RC_COMMAND_CODE) ||
+        (r == (TPM2_RC_COMMAND_CODE | TSS2_RESMGR_RC_LAYER)) ||
+        (r == (TPM2_RC_COMMAND_CODE | TSS2_RESMGR_TPM_RC_LAYER))) {
+        LOGE("Command TPM2_EncryptDecrypt not supported by TPM.");
+        failure_return = -1;
+        goto error;
+    }
+
+    if (r != TSS2_RC_SUCCESS) {
+        LOGE("Error EncryptDecrypt:0x%x", r);
+        goto error;
+    }
+    printf("rsa key encryped: indata = %.*s, outData = %.*s\n", inData.size, inData.buffer, outData->size, outData->buffer);
+    TPM2B_MAX_BUFFER* outData2;
+    TPM2B_IV* ivOut2;
+
+    /******* 解密数据decrypt ********/
+    r = Esys_EncryptDecrypt(
+        esys_context,
+        keyHandle_handle,
+        ESYS_TR_PASSWORD,
+        ESYS_TR_NONE,
+        ESYS_TR_NONE,
+        decrypt,
+        mode,
+        &ivIn,
+        outData,
+        &outData2,
+        &ivOut2);
+
+    if ((r == TPM2_RC_COMMAND_CODE) ||
+        (r == (TPM2_RC_COMMAND_CODE | TSS2_RESMGR_RC_LAYER)) ||
+        (r == (TPM2_RC_COMMAND_CODE | TSS2_RESMGR_TPM_RC_LAYER))) {
+        LOGE("Command TPM2_EncryptDecrypt not supported by TPM.");
+        failure_return = -1;
+        goto error;
+    }
+
+    if (r != TSS2_RC_SUCCESS) {
+        LOGE("Error EncryptDecrypt:0x%x", r);
+        goto error;
+    }
+
+    /********* 验证解密的结果 *********/
+    printf("rsa key decryped: indata = %.*s, outData = %.*s\n", outData->size, outData->buffer, outData2->size, outData2->buffer);
+    if (outData2->size != inData.size ||
+        memcmp(&outData2->buffer, &inData.buffer[0], outData2->size) != 0) {  // 这里是比较加解密的数据
+        LOGE("Error: decrypted text not  equal to origin");
+        goto error;
+    }
+
+    // clean
+    r = Esys_FlushContext(esys_context, primaryHandle);
+    if (r != TSS2_RC_SUCCESS) {
+        LOGE("Error during FlushContext:0x%x", r);
+        goto error;
+    }
+
+    primaryHandle = ESYS_TR_NONE;
+
+    r = Esys_FlushContext(esys_context, loadedKeyHandle);
+    if (r != TSS2_RC_SUCCESS) {
+        LOGE("Error during FlushContext:0x%x", r);
+        goto error;
+    }
+
     return EXIT_SUCCESS;
-
 error:
-
     if (primaryHandle != ESYS_TR_NONE) {
-        if (Esys_FlushContext(tcx->esys_ctx, primaryHandle) != TSS2_RC_SUCCESS) {
+        if (Esys_FlushContext(esys_context, primaryHandle) != TSS2_RC_SUCCESS) {
             LOGE("Cleanup primaryHandle failed.");
         }
     }
 
-    return EXIT_FAILURE;
-}
-
-//////////////////////////////////////////  create app handle  //////////////////////////////////////////////////////
-#define MAX_APPS 10
-
-typedef struct {
-    char app_name[64];
-    TPMI_DH_PERSISTENT handle;
-} AppHandleMap;
-
-AppHandleMap app_map[MAX_APPS];
-int app_count = 0;
-
-TPMI_DH_PERSISTENT get_or_create_handle(const char* app_name) {
-    for (int i = 0; i < app_count; i++) {
-        if (strcmp(app_map[i].app_name, app_name) == 0) {
-            return app_map[i].handle;
+    if (loadedKeyHandle != ESYS_TR_NONE) {
+        if (Esys_FlushContext(esys_context, loadedKeyHandle) != TSS2_RC_SUCCESS) {
+            LOGE("Cleanup loadedKeyHandle failed.");
         }
     }
-
-    if (app_count >= MAX_APPS) {
-        fprintf(stderr, "Maximum number of applications reached\n");
-        exit(1);
-    }
-
-    app_map[app_count].handle = DEFAULT_SRK_HANDLE + app_count;
-    //    app_map[app_count].handle = DEFAULT_SRK_HANDLE;
-    strncpy(app_map[app_count].app_name, app_name, sizeof(app_map[app_count].app_name) - 1);
-    app_count++;
-    return app_map[app_count - 1].handle;
+    return failure_return;
 }

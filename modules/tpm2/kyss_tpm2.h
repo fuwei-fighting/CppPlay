@@ -6,26 +6,10 @@
 #define TPM2_KYSS_TPM2_H
 
 #include "log.h"
-#include "pkcs.h"
 
-#include <tss2/tss2_esys.h>
-#include <tss2/tss2_mu.h>
-#include <tss2/tss2_rc.h>
-#include <tss2/tss2_tctildr.h>
-
-#include <string.h>
-#include <stdbool.h>
+#include "kyss_common.h"
 
 #define DEFAULT_SRK_HANDLE 0x81010020
-/* config env var for TCTI context */
-#define TPM2_PKCS11_TCTI "TPM2_PKCS11_TCTI"
-
-/* The PCR index used to seal/unseal the passphrase */
-#define CRYPTFS_TPM2_PCR_INDEX 7
-
-typedef unsigned long CK_RS;  // result
-
-typedef struct tpm_ctx tpm_ctx;
 
 /**
  * @description: init tpm context (from tcti context)
@@ -37,7 +21,7 @@ CK_RS kyss_tpm_ctx_new_fromtcti(void* tcti, tpm_ctx** tctx);
 
 /**
  * @brief tpm根据软件进行初始化，创建系统级全局主密钥。
- * @param app
+ * @param evict_handle
  * @return
  */
 CK_RS kyss_tpm_app_init(tpm_ctx* t_ctx, TPMI_DH_PERSISTENT evict_handle, const char* password);
@@ -50,21 +34,22 @@ CK_RS kyss_tpm_app_init(tpm_ctx* t_ctx, TPMI_DH_PERSISTENT evict_handle, const c
 CK_RS kyss_tpm_get_app_primary(tpm_ctx* t_ctx, uint32_t default_handle, uint32_t* primary_handle, const char** primary_blob);
 
 /**
- * @brief 根据主密钥创建子密钥
+ * @brief 通过密码授权创建子密钥
  * @param tcx
- * @param parent
+ * @param parent 主密钥handle
  * @param password
  * @param out_handle
  * @param out_pub
  * @param out_priv
  * @return
  */
-CK_RS kyss_tpm_generate_key_from_primary(tpm_ctx* tcx,
-                                         uint32_t parent,
-                                         const char* password,
-                                         ESYS_TR* out_handle,
-                                         TPM2B_PUBLIC** out_pub,
-                                         TPM2B_PRIVATE** out_priv);
+CK_RS kyss_tpm_generate_key_by_password(tpm_ctx* tcx,
+                                        uint32_t parent,
+                                        const char* password,
+                                        ESYS_TR* out_handle,
+                                        TPM2B_PUBLIC** out_pub,
+                                        TPM2B_PRIVATE** out_priv);
+
 /**
  * @brief 使用指定密钥进行rsa加密
  * @param tcx
@@ -93,40 +78,35 @@ CK_RS kyss_tpm_decrypt_rsa(tpm_ctx* tcx, uint32_t handle, const char* password, 
                            char* ctext, unsigned int* ctextlen);
 
 /**
- * @brief 开启tpm会话
- * @param ctx
- * @param auth
- * @param handle
+ * @brief 根据pcr policy创建主密钥
+ * @param tcx
+ * @param primary_handle
  * @return
  */
-CK_RS tpm_session_start(tpm_ctx* ctx, const char* auth, uint32_t handle);
+CK_RS kyss_tpm_generate_primary_by_policy_pcr(tpm_ctx* tcx,
+                                              TPM2B_PUBLIC** out_pub,
+                                              TPM2B_PRIVATE** out_priv);
+
+CK_RS kyss_tpm_encrypt_rsa_pcr_policy(tpm_ctx* tcx, uint32_t handle, const char* ctext, unsigned int ctextlen,
+                                      char* ptext, unsigned int* ptextlen);
+
+CK_RS kyss_tpm_generate_key_by_primary(tpm_ctx* tcx,
+                                       ESYS_TR primary_handle,
+                                       TPM2B_PUBLIC** out_pub,
+                                       TPM2B_PRIVATE** out_priv);
 
 /**
- * @brief 关闭tpm会话
- * @param ctx
+ * @brief 根据tpm上下文创建子密钥，保存在指定目录
+ * @param tcx: tpm上下文
+ * @param path: 密钥文件保存路径
+ * @param out_pub: 生成的公钥部分
+ * @param out_priv: 生成的私钥部分
  * @return
  */
-CK_RS tpm_session_stop(tpm_ctx* ctx);
+CK_RS kyss_tpm_generate_key(tpm_ctx** tcx,
+                            const char* path,
+                            TPM2B_PUBLIC** out_pub,
+                            TPM2B_PRIVATE** out_priv);
 
-/**
- * @brief 关闭指定tpm handle
- * @param ctx
- * @param handle
- * @return
- */
-bool tpm_flushcontext(tpm_ctx* ctx, uint32_t handle);
-
-/**
- * @brief 设置授权值（输入密码）
- * @param esys_ctx
- * @param handle
- * @param auth
- * @return
- */
-bool set_esys_auth(ESYS_CONTEXT* esys_ctx, ESYS_TR handle, const char* auth);
-
-///// @deprecated
-static TPMI_DH_PERSISTENT get_or_create_handle(const char* app_name);
-int test_esys_rsa_encrypt_decrypt(tpm_ctx* tcx);
-
+int test_esys_encrypt_decrypt_sym(ESYS_CONTEXT* esys_context);
 #endif  //TPM2_KYSS_TPM2_H

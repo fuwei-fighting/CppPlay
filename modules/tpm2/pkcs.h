@@ -5,6 +5,9 @@
 #ifndef TPM2_PKCS_H
 #define TPM2_PKCS_H
 
+#include <stdbool.h>
+#include <stdint.h>
+
 #define ck_key_type_t CK_KEY_TYPE
 typedef unsigned long ck_key_type_t;
 
