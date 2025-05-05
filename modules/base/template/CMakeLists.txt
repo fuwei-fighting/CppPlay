@@ -1,0 +1,6 @@
+set(SOURCE_FILES)
+foreach(DIR ${CMAKE_CURRENT_SOURCE_DIR} )
+    file(GLOB TEMP_FILES ${DIR}/*.mm ${DIR}/*.m ${DIR}/*.c ${DIR}/*.cpp ${DIR}/*.h ${DIR}/*.hpp)
+    list(APPEND SOURCE_FILES ${TEMP_FILES})
+endforeach()
+target_sources(${PROJECT_NAME} PRIVATE ${SOURCE_FILES})
